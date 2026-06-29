@@ -1,9 +1,0 @@
-subset,dataset,variant,dtype,n_queries,n_docs,ndcg@5,recall@1,recall@5,avg_doc_tokens,avg_doc_kb,total_doc_kb,mean_keep_ratio,storage_saving_pct
-arxivqa,v1,baseline,torch.bfloat16,500,500,0.7838,0.72,0.84,1031.0,257.75,128875.0,1.0,0.0
-arxivqa,v1,pruned,torch.bfloat16,500,500,0.7551,0.686,0.812,352.9,88.226,44113.0,0.3378,65.77
-economics_v2,v2,baseline,torch.bfloat16,232,452,0.4414,0.0431,0.2282,1031.0,257.75,116503.0,1.0,0.0
-economics_v2,v2,pruned,torch.bfloat16,232,452,0.3977,0.0451,0.1776,328.04,82.0088,37068.0,0.3135,68.18
-AVERAGE,v1,baseline,torch.bfloat16,500,500,0.7838,0.72,0.84,1031.0,257.75,128875.0,1.0,0.0
-AVERAGE,v1,pruned,torch.bfloat16,500,500,0.7551,0.686,0.812,352.9,88.226,44113.0,0.3378,65.77
-AVERAGE,v2,baseline,torch.bfloat16,232,452,0.4414,0.0431,0.2282,1031.0,257.75,116503.0,1.0,0.0
-AVERAGE,v2,pruned,torch.bfloat16,232,452,0.3977,0.0451,0.1776,328.04,82.0088,37068.0,0.3135,68.18
