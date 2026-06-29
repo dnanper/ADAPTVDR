@@ -1,0 +1,13 @@
+split,dims,n_queries,n_docs,recall@1,recall@5,recall@10,mrr,ndcg@5,checkpoint
+single_test,128,1374,192,0.6012,0.7584,0.8151,0.6783,0.687,ColQwen3.5-0.8B-Embedding-v2
+single_test,256,1374,192,0.6405,0.7838,0.8457,0.7086,0.7169,ColQwen3.5-0.8B-Embedding-v2
+single_test,512,1374,192,0.6689,0.8093,0.8574,0.7329,0.743,ColQwen3.5-0.8B-Embedding-v2
+single_test,1024,1374,192,0.6667,0.8122,0.861,0.7351,0.7453,ColQwen3.5-0.8B-Embedding-v2
+multi_test,128,636,509,0.3137,0.7699,0.8552,0.8788,0.7591,ColQwen3.5-0.8B-Embedding-v2
+multi_test,256,636,509,0.3267,0.7909,0.8665,0.9025,0.7843,ColQwen3.5-0.8B-Embedding-v2
+multi_test,512,636,509,0.3415,0.8101,0.8847,0.9284,0.812,ColQwen3.5-0.8B-Embedding-v2
+multi_test,1024,636,509,0.3454,0.8219,0.893,0.9362,0.8231,ColQwen3.5-0.8B-Embedding-v2
+ALL,128,2010,701,0.5102,0.762,0.8278,0.7417,0.7098,ColQwen3.5-0.8B-Embedding-v2
+ALL,256,2010,701,0.5412,0.786,0.8523,0.77,0.7382,ColQwen3.5-0.8B-Embedding-v2
+ALL,512,2010,701,0.5653,0.8096,0.866,0.7948,0.7648,ColQwen3.5-0.8B-Embedding-v2
+ALL,1024,2010,701,0.565,0.8153,0.8711,0.7987,0.7699,ColQwen3.5-0.8B-Embedding-v2

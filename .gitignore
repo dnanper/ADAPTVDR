@@ -1,0 +1,49 @@
+# Local editor / agent files
+.codex
+.vscode/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and secrets
+.env
+.env.*
+.venv/
+venv/
+
+# Runtime logs and process output
+*.log
+logs/
+nohup*.out
+
+# Model and training artifacts
+checkpoints/
+*.safetensors
+*.bin
+*.ckpt
+*.pt
+*.pth
+
+# Large dataset/cache artifacts
+dataset/*
+!dataset/vinfographic/
+dataset/vinfographic/*
+!dataset/vinfographic/.gitattributes
+!dataset/vinfographic/README.md
+!dataset/vinfographic/data/
+!dataset/vinfographic/data/*.json
+!dataset/vinfographic/folder.py
+!dataset/vinfographic/upload.py
+*.parquet
+*.arrow
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+.csg/
+.omx/

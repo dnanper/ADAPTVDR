@@ -1,0 +1,26 @@
+# Core ML
+# torch>=2.4.0
+# torchvision
+
+# Transformers - cần 4.51+ cho Qwen3-VL
+transformers>=4.51.0
+
+# ColPali official library (model + processor cho ColPali)
+colpali-engine>=0.3.10
+peft>=0.12.0
+
+# Image processing (ColQwen)
+qwen-vl-utils>=0.0.8
+Pillow>=10.0.0
+
+# Dataset loading (ViDoRe parquet)
+datasets>=2.15.0
+pyarrow>=17.0.0
+
+# Metrics
+scipy>=1.11.0
+
+# Utils
+numpy>=1.26.4
+pandas>=2.0.0
+tqdm>=4.65.0

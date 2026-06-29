@@ -1,0 +1,85 @@
+# Training Configuration — ColQwen3.5-0.8B on pre-built Triplet dataset (en only, ~60k samples)
+# Pre-process data first:
+  # python scripts/build_triplet_dataset.py \
+  #     --data_root  dataset/llamaindex-multilingual/6b92b5cae23d44509f1e05d7062befe5ec77f7c9 \
+  #     --languages  en \
+  #     --hard_neg_k 3 \
+  #     --output_dir dataset/triplets-en
+#
+# Hardware: NVIDIA A100-SXM4-80GB (single GPU), 60 GB RAM
+# Strategy: LoRA, AugmentedMaxSimLoss, 1 epoch, num_workers=4 (Polars collect() is fork-safe)
+
+model:
+  name_or_path: "/data2/cmdir/home/test01/longvnu/stable_diff/models/Qwen/Qwen3.5-0.8B"
+  mode: "multivec_mrl"           # dense | multivec_proj | multivec_mrl
+  hidden_size: 1024
+  torch_dtype: "bfloat16"
+
+lora:
+  r: 32
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: "none"
+  target_modules:
+    - "in_proj_a"
+    - "in_proj_b"
+    - "in_proj_qkv"
+    - "in_proj_z"
+    - "out_proj"
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+training:
+  output_dir: "checkpoints/colqwen3_5_triplet-en-0.8b"
+  num_epochs: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 4    # eff. batch = 8 * 4 = 32 queries
+                                     # doc batch  = 32 + 32*3 = 128 docs
+  learning_rate: 3.0e-5
+  warmup_ratio: 0.025
+  lr_scheduler_type: "cosine"
+  max_grad_norm: 1.0
+  gradient_checkpointing: true
+  bf16: true
+  fp16: false
+  optimizer: "paged_adamw_8bit"
+  dataloader_num_workers: 4          # mmap is fork-safe → use workers freely
+  logging_steps: 100
+  save_steps: 1000
+  save_total_limit: 3
+  seed: 42
+
+data:
+  dataset_type: "triplet"            # ← TripletDataset + AugmentedMaxSimLoss
+  train_data_path: "dataset/triplets-en"
+  hard_neg_k: 3                     # must match --hard_neg_k used during build
+  eval_data_path: "dataset/vidore_train/datasets--vidore--colpali_train_set/snapshots/e13d3594064836f7fd69fad7e3d2b51065b335c7/data"
+  eval_split: "test"
+  eval_img_batch: 4
+  eval_q_batch: 16
+  num_shards: null
+  attn_cache_path_prior: null
+  attn_cache_path_query: null
+  max_length: 2048
+  min_pixels: 4096
+  max_pixels: 1048576
+
+loss:
+  temperature: 1.0                   # MatryoshkaAugmentedMaxSimLoss temperature
+  dims: [128, 256, 512, 1024]        # MRL dim prefixes (must be ≤ hidden_size=1024)
+  agree_lambda_prior: 0.0
+  agree_lambda_query: 0.0
+  agree_loss_type: "kl"
+  agree_student_score_mode: "softmax_sum"
+
+evaluation:
+  eval_steps: 1000
+  metrics:
+    - "ndcg@5"
+    - "recall@1"
+    - "recall@5"

@@ -1,0 +1,71 @@
+# Multi-Vector + Projection Head — ColQwen3.5-2B → 128-dim per token
+# Architecture: LoRA + linear_head (2048 → 128, per token) + Matryoshka MaxSim
+# Hardware: NVIDIA A100-SXM4-80GB (single GPU)
+
+model:
+  name_or_path: "/data2/cmdir/home/test01/longvnu/stable_diff/models/Qwen/Qwen3.5-2B-Base"
+  hidden_size: 2048
+  projection_dim: 128          # enables linear_head: 2048 → 128 (per token)
+  torch_dtype: "bfloat16"
+
+lora:
+  r: 32
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: "none"
+  target_modules:
+    - "in_proj_a"
+    - "in_proj_b"
+    - "in_proj_qkv"
+    - "in_proj_z"
+    - "out_proj"
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+training:
+  output_dir: "checkpoints/colqwen3_5_proj128"
+  num_epochs: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 4    # eff. batch = 32
+  learning_rate: 5.0e-5
+  warmup_ratio: 0.025
+  lr_scheduler_type: "cosine"
+  max_grad_norm: 1.0
+  gradient_checkpointing: true
+  bf16: true
+  fp16: false
+  optimizer: "paged_adamw_8bit"
+  dataloader_num_workers: 4
+  logging_steps: 50
+  save_steps: 500
+  save_total_limit: 2
+  seed: 42
+
+data:
+  train_data_path: "dataset/vidore_train/datasets--vidore--colpali_train_set/snapshots/e13d3594064836f7fd69fad7e3d2b51065b335c7/data"
+  eval_data_path: "dataset/vidore_train/datasets--vidore--colpali_train_set/snapshots/e13d3594064836f7fd69fad7e3d2b51065b335c7/data"
+  eval_split: "test"
+  eval_img_batch: 4
+  eval_q_batch: 16
+  num_shards: null
+  max_length: 2048
+  min_pixels: 4096
+  max_pixels: 1048576
+
+loss:
+  type: "matryoshka_maxsim"
+  temperature: 1.0
+  dims: [32, 64, 128]          # train tại 3 scales, max = proj_dim
+  weights: [1, 1, 2]           # upweight full-dim (128)
+
+evaluation:
+  eval_steps: 500
+  metrics:
+    - "ndcg@5"
+    - "recall@1"
+    - "recall@5"
