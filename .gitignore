@@ -38,7 +38,7 @@ dataset/vinfographic/*
 !dataset/vinfographic/data/*.json
 !dataset/vinfographic/folder.py
 !dataset/vinfographic/upload.py
-*.parquet
+# *.parquet
 *.arrow
 docs/
 
