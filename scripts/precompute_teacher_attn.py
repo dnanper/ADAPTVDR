@@ -51,7 +51,7 @@ PROMPT_MODE_IMAGE_ONLY = "image_only"
 SOURCE_MODE_QUERY = "query"
 SOURCE_MODE_INSTRUCTION = "instruction"
 SOURCE_MODE_ALL_NON_IMAGE = "all_non_image"
-REQUIRED_COLUMNS = ("query", "image")
+REQUIRED_COLUMNS = ("query",)
 
 
 def parse_args() -> argparse.Namespace:
@@ -159,6 +159,9 @@ def _decode_image(img_data) -> Image.Image:
 def _parquet_files(data_path: str, split: str, num_shards: Optional[int]) -> List[str]:
     pattern = os.path.join(data_path, f"{split}-*.parquet")
     files = sorted(glob.glob(pattern))
+    if not files:
+        pattern = os.path.join(data_path, f"*{split}-*.parquet")
+        files = sorted(glob.glob(pattern))
     if num_shards is not None:
         files = files[:num_shards]
     if not files:
@@ -170,6 +173,8 @@ def _validate_required_columns(df: pd.DataFrame, shard_file: str) -> None:
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
     if missing:
         raise ValueError(f"{shard_file} is missing required columns: {missing}")
+    if "image" not in df.columns and "positive" not in df.columns:
+        raise ValueError(f"{shard_file} must contain either 'image' or 'positive'")
 
 
 def stable_sample_id(
@@ -377,8 +382,12 @@ def _iter_rows(
         try:
             df = pd.read_parquet(shard_file, columns=["query", "image", "image_filename"])
         except Exception:
-            df = pd.read_parquet(shard_file, columns=["query", "image"])
-            df["image_filename"] = None
+            try:
+                df = pd.read_parquet(shard_file, columns=["query", "image"])
+                df["image_filename"] = None
+            except Exception:
+                df = pd.read_parquet(shard_file, columns=["query", "positive", "sample_id"])
+                df["image_filename"] = None
         _validate_required_columns(df, shard_file)
         for row_idx, row in df.iterrows():
             yield shard_file, row_idx, row
@@ -498,7 +507,7 @@ def main() -> None:
                 skipped += 1
                 continue
 
-            sample_id = stable_sample_id(
+            sample_id = row.get("sample_id") or stable_sample_id(
                 shard_path=shard_file,
                 row_idx=row_idx,
                 image_filename=row.get("image_filename"),
@@ -508,7 +517,7 @@ def main() -> None:
                 continue
 
             try:
-                image = _decode_image(row["image"])
+                image = _decode_image(row["image"] if "image" in row else row["positive"])
             except Exception as exc:
                 skipped += 1
                 print(f"[skip] failed to decode image for sample {sample_id}: {exc}")
