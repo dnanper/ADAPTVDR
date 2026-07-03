@@ -2,7 +2,6 @@ import math
 from typing import Any, Dict, List, Optional
 
 from PIL import Image
-from transformers import AutoProcessor
 
 
 class Phi3MMDocIRCollator:
@@ -20,6 +19,8 @@ class Phi3MMDocIRCollator:
         query_template: str = "<|user|>\n{query_instruction}\nquery: {query}<|end|>\n<|assistant|>\n",
         doc_template: str = "<|user|>\n{doc_instruction}\n<|image_1|>\nWhat is shown in this image?<|end|>\n<|assistant|>\n",
     ):
+        from transformers import AutoProcessor
+
         self.processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,

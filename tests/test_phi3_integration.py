@@ -1,7 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import torch
 from PIL import Image
@@ -44,7 +44,9 @@ class _FakeProcessor:
 class TestPhi3Integration(unittest.TestCase):
     def test_collator_returns_colpali_style_masks_and_dynamic_resizes_docs(self):
         fake_processor = _FakeProcessor()
-        with patch("train.phi3_collator.AutoProcessor.from_pretrained", return_value=fake_processor):
+        fake_transformers = MagicMock()
+        fake_transformers.AutoProcessor.from_pretrained.return_value = fake_processor
+        with patch.dict(sys.modules, {"transformers": fake_transformers}):
             collator = Phi3MMDocIRCollator(
                 "fake-phi3",
                 image_size=None,
