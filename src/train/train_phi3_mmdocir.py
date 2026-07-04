@@ -1,7 +1,10 @@
 """Train Phi3-Vision with thesis-style late-interaction hard-negative loss."""
 
 import argparse
+import csv
+import json
 import sys
+import time
 from pathlib import Path
 
 _THIS = Path(__file__).resolve().parent
@@ -56,6 +59,42 @@ def make_optimizer(params, lr: float):
         return bnb.optim.PagedAdamW8bit(params, lr=lr)
     except Exception:
         return torch.optim.AdamW(params, lr=lr)
+
+
+class TrainMetricLogger:
+    def __init__(self, output_dir: Path):
+        self.csv_path = output_dir / "train_metrics.csv"
+        self.jsonl_path = output_dir / "train_metrics.jsonl"
+        self.fields = [
+            "time",
+            "epoch",
+            "global_step",
+            "micro_step",
+            "lr",
+            "loss",
+            "retrieval_loss",
+            "agree_query",
+            "agree_prior",
+            "matched_query",
+            "matched_prior",
+        ]
+        self.csv_file = self.csv_path.open("a", newline="", encoding="utf-8")
+        self.writer = csv.DictWriter(self.csv_file, fieldnames=self.fields)
+        if self.csv_path.stat().st_size == 0:
+            self.writer.writeheader()
+            self.csv_file.flush()
+        self.jsonl_file = self.jsonl_path.open("a", encoding="utf-8")
+
+    def log(self, row: dict) -> None:
+        record = {field: row.get(field) for field in self.fields}
+        self.writer.writerow(record)
+        self.csv_file.flush()
+        self.jsonl_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self.jsonl_file.flush()
+
+    def close(self) -> None:
+        self.csv_file.close()
+        self.jsonl_file.close()
 
 
 def main() -> None:
@@ -141,85 +180,123 @@ def main() -> None:
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
     output_dir = Path(cfg.training.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    metric_logger = TrainMetricLogger(output_dir)
+    if hasattr(model, "print_trainable_parameters"):
+        model.print_trainable_parameters()
+    print(f"Metrics : {metric_logger.csv_path}")
+    print(f"Metrics : {metric_logger.jsonl_path}")
 
     global_step = 0
     optimizer.zero_grad()
-    for epoch in range(cfg.training.num_epochs):
-        progress = tqdm(dataloader, desc=f"epoch {epoch + 1}/{cfg.training.num_epochs}")
-        for step, batch in enumerate(progress):
-            query_inputs = move_to_device(batch["query_inputs"], device)
-            doc_inputs = move_to_device(batch["doc_inputs"], device)
-            pos_count = int(batch["pos_count"])
-            sample_ids = list(batch.get("sample_ids", []))[:pos_count]
-            queries = list(batch.get("queries", []))[:pos_count]
+    try:
+        for epoch in range(cfg.training.num_epochs):
+            progress = tqdm(dataloader, desc=f"epoch {epoch + 1}/{cfg.training.num_epochs}")
+            for step, batch in enumerate(progress):
+                query_inputs = move_to_device(batch["query_inputs"], device)
+                doc_inputs = move_to_device(batch["doc_inputs"], device)
+                pos_count = int(batch["pos_count"])
+                sample_ids = list(batch.get("sample_ids", []))[:pos_count]
+                queries = list(batch.get("queries", []))[:pos_count]
 
-            need_attn = teacher_prior is not None and agree_lambda_prior > 0
-            q_out = model(**query_inputs)
-            d_out = model(**doc_inputs, output_attentions=need_attn)
-            q_emb, d_emb = q_out.hidden_states, d_out.hidden_states
-            q_mask = batch.get("query_token_mask", q_out.attention_mask.bool()).to(device)
-            d_mask = batch.get("doc_token_mask", d_out.attention_mask.bool()).to(device)
-            loss = loss_fn(q_emb, d_emb, q_mask, d_mask, pos_count=pos_count)
+                need_attn = teacher_prior is not None and agree_lambda_prior > 0
+                q_out = model(**query_inputs)
+                d_out = model(**doc_inputs, output_attentions=need_attn)
+                q_emb, d_emb = q_out.hidden_states, d_out.hidden_states
+                q_mask = batch.get("query_token_mask", q_out.attention_mask.bool()).to(device)
+                d_mask = batch.get("doc_token_mask", d_out.attention_mask.bool()).to(device)
+                retrieval_loss = loss_fn(q_emb, d_emb, q_mask, d_mask, pos_count=pos_count)
+                loss = retrieval_loss
+                agree_query_value = None
+                agree_prior_value = None
+                matched_query = 0
+                matched_prior = 0
 
-            if sample_ids and any(s is not None for s in sample_ids):
-                # Phi3 processor does not expose Qwen-style image_grid_thw; leave grid
-                # resizing off until a real Phi patch-grid mapper is added.
-                student_grids = None
-                if teacher_query is not None and agree_lambda_query > 0:
-                    student_scores = extract_query_patch_scores_from_similarity(
-                        q_emb=q_emb[:pos_count],
-                        d_emb=d_emb[:pos_count],
-                        q_input_ids=query_inputs["input_ids"][:pos_count],
-                        q_attention_mask=query_inputs["attention_mask"][:pos_count],
-                        d_input_ids=doc_inputs["input_ids"][:pos_count],
-                        d_attention_mask=doc_inputs["attention_mask"][:pos_count],
-                        queries=queries,
-                        tokenizer=collator.processor.tokenizer,
-                        image_token_id=collator.image_token_id,
-                        mode=str(cfg.loss.get("agree_student_score_mode", "softmax_sum")),
+                if sample_ids and any(s is not None for s in sample_ids):
+                    # Phi3 processor does not expose Qwen-style image_grid_thw; leave grid
+                    # resizing off until a real Phi patch-grid mapper is added.
+                    student_grids = None
+                    if teacher_query is not None and agree_lambda_query > 0:
+                        student_scores = extract_query_patch_scores_from_similarity(
+                            q_emb=q_emb[:pos_count],
+                            d_emb=d_emb[:pos_count],
+                            q_input_ids=query_inputs["input_ids"][:pos_count],
+                            q_attention_mask=query_inputs["attention_mask"][:pos_count],
+                            d_input_ids=doc_inputs["input_ids"][:pos_count],
+                            d_attention_mask=doc_inputs["attention_mask"][:pos_count],
+                            queries=queries,
+                            tokenizer=collator.processor.tokenizer,
+                            image_token_id=collator.image_token_id,
+                            mode=str(cfg.loss.get("agree_student_score_mode", "softmax_sum")),
+                        )
+                        align, matched_query = attention_alignment_loss(
+                            student_scores,
+                            teacher_query.get_many(sample_ids),
+                            loss_type=str(cfg.loss.get("agree_loss_type", "kl")),
+                            student_grids=student_grids,
+                            teacher_grids=teacher_query.get_many_grids(sample_ids),
+                        )
+                        if matched_query:
+                            agree_query_value = align.to(loss.device)
+                            loss = loss + agree_lambda_query * agree_query_value
+
+                    if teacher_prior is not None and agree_lambda_prior > 0:
+                        student_scores = extract_prior_patch_scores(
+                            attentions=d_out.attentions,
+                            input_ids=doc_inputs["input_ids"][:pos_count],
+                            attention_mask=doc_inputs["attention_mask"][:pos_count],
+                            image_token_id=collator.image_token_id,
+                            source_mode=teacher_prior.source_mode,
+                            instruction_token_ids=prior_instruction_token_ids,
+                        )
+                        align, matched_prior = attention_alignment_loss(
+                            student_scores,
+                            teacher_prior.get_many(sample_ids),
+                            loss_type=str(cfg.loss.get("agree_loss_type", "kl")),
+                            student_grids=student_grids,
+                            teacher_grids=teacher_prior.get_many_grids(sample_ids),
+                        )
+                        if matched_prior:
+                            agree_prior_value = align.to(loss.device)
+                            loss = loss + agree_lambda_prior * agree_prior_value
+
+                (loss / grad_accum).backward()
+                if (step + 1) % grad_accum == 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    global_step += 1
+                    lr = scheduler.get_last_lr()[0]
+                    row = {
+                        "time": time.time(),
+                        "epoch": epoch + 1,
+                        "global_step": global_step,
+                        "micro_step": step + 1,
+                        "lr": lr,
+                        "loss": float(loss.detach().cpu()),
+                        "retrieval_loss": float(retrieval_loss.detach().cpu()),
+                        "agree_query": float(agree_query_value.detach().cpu()) if agree_query_value is not None else None,
+                        "agree_prior": float(agree_prior_value.detach().cpu()) if agree_prior_value is not None else None,
+                        "matched_query": matched_query,
+                        "matched_prior": matched_prior,
+                    }
+                    metric_logger.log(row)
+                    progress.set_postfix(
+                        loss=f"{row['loss']:.4f}",
+                        ret=f"{row['retrieval_loss']:.4f}",
+                        aq="-" if row["agree_query"] is None else f"{row['agree_query']:.4f}",
+                        ap="-" if row["agree_prior"] is None else f"{row['agree_prior']:.4f}",
+                        mq=matched_query,
+                        mp=matched_prior,
+                        lr=f"{lr:.1e}",
                     )
-                    align, matched = attention_alignment_loss(
-                        student_scores,
-                        teacher_query.get_many(sample_ids),
-                        loss_type=str(cfg.loss.get("agree_loss_type", "kl")),
-                        student_grids=student_grids,
-                        teacher_grids=teacher_query.get_many_grids(sample_ids),
-                    )
-                    if matched:
-                        loss = loss + agree_lambda_query * align.to(loss.device)
+                    if global_step % cfg.training.save_steps == 0:
+                        model.save_pretrained(output_dir / f"checkpoint-{global_step}")
 
-                if teacher_prior is not None and agree_lambda_prior > 0:
-                    student_scores = extract_prior_patch_scores(
-                        attentions=d_out.attentions,
-                        input_ids=doc_inputs["input_ids"][:pos_count],
-                        attention_mask=doc_inputs["attention_mask"][:pos_count],
-                        image_token_id=collator.image_token_id,
-                        source_mode=teacher_prior.source_mode,
-                        instruction_token_ids=prior_instruction_token_ids,
-                    )
-                    align, matched = attention_alignment_loss(
-                        student_scores,
-                        teacher_prior.get_many(sample_ids),
-                        loss_type=str(cfg.loss.get("agree_loss_type", "kl")),
-                        student_grids=student_grids,
-                        teacher_grids=teacher_prior.get_many_grids(sample_ids),
-                    )
-                    if matched:
-                        loss = loss + agree_lambda_prior * align.to(loss.device)
-
-            (loss / grad_accum).backward()
-            if (step + 1) % grad_accum == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
-                global_step += 1
-                progress.set_postfix(loss=f"{loss.item():.4f}", lr=f"{scheduler.get_last_lr()[0]:.1e}")
-                if global_step % cfg.training.save_steps == 0:
-                    model.save_pretrained(output_dir / f"checkpoint-{global_step}")
-
-    model.save_pretrained(output_dir / "final")
-    print(f"saved: {output_dir / 'final'}")
+        model.save_pretrained(output_dir / "final")
+        print(f"saved: {output_dir / 'final'}")
+    finally:
+        metric_logger.close()
 
 
 if __name__ == "__main__":

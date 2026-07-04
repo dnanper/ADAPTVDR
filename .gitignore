@@ -38,13 +38,15 @@ dataset/vinfographic/*
 !dataset/vinfographic/data/*.json
 !dataset/vinfographic/folder.py
 !dataset/vinfographic/upload.py
-# *.parquet
+*.parquet
 *.arrow
 docs/
 
 # Notebook checkpoints
 .ipynb_checkpoints/
 */.ipynb_checkpoints/
+
+mmdocir-triplets-k1-smoke32/
 
 .csg/
 .omx/

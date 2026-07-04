@@ -2,8 +2,8 @@
 
 ```bash
 cd /workspace
-git clone <YOUR_REPO_URL> graduation_thesis_vidore
-cd /workspace/graduation_thesis_vidore
+git clone https://github.com/dnanper/vidore-thesis.git -b phi3
+cd /workspace/vidore-thesis
 ```
 
 ```bash
@@ -58,14 +58,6 @@ hf download Qwen/Qwen3-VL-8B-Instruct --local-dir models/Qwen3-VL-8B-Instruct
 
 ## 6. Build MMDocIR Triplets
 
-This uses official MMDocIR train layout:
-
-10% smoke/experiment subset:
-
-```bash
-python scripts/build_mmdocir_triplets.py --dataset_root dataset/MMDocIR_Train_Dataset --hard_neg_k 1 --sample-fraction 0.1 --sample-seed 42 --output_dir dataset/mmdocir-triplets-k1-10p
-```
-
 100% training set:
 
 ```bash
@@ -86,7 +78,7 @@ print("rows first shard", len(df))
 PY
 ```
 
-## 7. Smoke Precompute on 100 Samples
+## 7. Smoke Precompute on 32 Samples
 
 Run this before the 10% job to catch environment/model/data issues.
 
@@ -99,8 +91,8 @@ Prior teacher cache:
 ```bash
 python -u scripts/precompute_teacher_attn.py \
     --teacher-model models/Qwen3-VL-8B-Instruct \
-    --train-data-path dataset/mmdocir-triplets-k1-10p \
-    --output-path dataset/attn_cache_mmdocir_phi3_prior_smoke \
+    --train-data-path dataset/mmdocir-triplets-k1-smoke32 \
+    --output-path dataset/attn_cache_mmdocir_phi3_prior_smoke32 \
     --prompt-mode image_only \
     --source-mode instruction \
     --layer-index -1 \
@@ -109,75 +101,35 @@ python -u scripts/precompute_teacher_attn.py \
     --instruction "Represent the user's input." \
     --min-pixels 4096 \
     --max-pixels 1048576 \
-    --max-samples 100 \
-    --resume 2>&1 | tee logs/precompute_prior.log
+    --resume
 ```
 
 Query-conditioned teacher cache:
 
 ```bash
 python -u scripts/precompute_teacher_attn.py \
-  --teacher-model models/Qwen3-VL-8B-Instruct \
-  --train-data-path dataset/mmdocir-triplets-k1-10p \
-  --output-path dataset/attn_cache_mmdocir_phi3_query_smoke \
-  --prompt-mode query_image \
-  --source-mode query \
-  --layer-index -1 \
-  --batch-size 1 \
-  --save-every 1 \
-  --instruction "Represent the user's input." \
-  --min-pixels 4096 \
-  --max-pixels 1048576 \
-  --max-samples 100 \
-  --resume 2>&1 | tee logs/precompute_query.log
+    --teacher-model models/Qwen3-VL-8B-Instruct \
+    --train-data-path dataset/mmdocir-triplets-k1-smoke32 \
+    --output-path dataset/attn_cache_mmdocir_phi3_query_smoke32 \
+    --prompt-mode query_image \
+    --source-mode query \
+    --layer-index -1 \
+    --batch-size 1 \
+    --save-every 1 \
+    --instruction "Represent the user's input." \
+    --min-pixels 4096 \
+    --max-pixels 1048576 \
+    --resume
 ```
 
 Check outputs:
 
 ```bash
-find dataset/attn_cache_mmdocir_phi3_prior_smoke -maxdepth 1 -type f | head
-find dataset/attn_cache_mmdocir_phi3_query_smoke -maxdepth 1 -type f | head
+find dataset/attn_cache_mmdocir_phi3_prior_smoke32 -maxdepth 1 -type f | head
+find dataset/attn_cache_mmdocir_phi3_query_smoke32 -maxdepth 1 -type f | head
 ```
 
-## 8. Full 10% Precompute
-
-Prior:
-
-```bash
-python -u scripts/precompute_teacher_attn.py \
-  --teacher-model models/Qwen3-VL-8B-Instruct \
-  --train-data-path dataset/mmdocir-triplets-k1-10p \
-  --output-path dataset/attn_cache_mmdocir_phi3_prior_10p \
-  --prompt-mode image_only \
-  --source-mode instruction \
-  --layer-index -1 \
-  --batch-size 1 \
-  --save-every 1 \
-  --instruction "Represent the user's input." \
-  --min-pixels 4096 \
-  --max-pixels 1048576 \
-  --resume 2>&1 | tee logs/precompute_prior_10p.log
-```
-
-Query:
-
-```bash
-python -u scripts/precompute_teacher_attn.py \
-  --teacher-model models/Qwen3-VL-8B-Instruct \
-  --train-data-path dataset/mmdocir-triplets-k1-10p \
-  --output-path dataset/attn_cache_mmdocir_phi3_query_10p \
-  --prompt-mode query_image \
-  --source-mode query \
-  --layer-index -1 \
-  --batch-size 1 \
-  --save-every 1 \
-  --instruction "Represent the user's input." \
-  --min-pixels 4096 \
-  --max-pixels 1048576 \
-  --resume 2>&1 | tee logs/precompute_query_10p.log
-```
-
-## 9. Full 100% Precompute
+## 8. Full 100% Precompute
 
 Prior:
 
@@ -214,8 +166,6 @@ python -u scripts/precompute_teacher_attn.py \
   --max-pixels 1048576 \
   --resume 2>&1 | tee logs/precompute_query_full.log
 ```
-
-Use `--batch-size 2` only if GPU memory is stable. Keep `--resume`; each batch shard is saved independently.
 
 ## 10. Verify Cache Metadata
 
@@ -262,15 +212,12 @@ pruning:
 
 For full-data training, switch all three paths to `mmdocir-triplets-k1-full`, `attn_cache_mmdocir_phi3_prior_full`, and `attn_cache_mmdocir_phi3_query_full`.
 
-Current Phi3 training path is ColPali-style:
-
-- query mask: non-image query tokens
-- document mask: image tokens only
-- document page resize: dynamic when `image_size: null`, bounded by `min_pixels/max_pixels`
-- teacher alignment: only positive query-page pairs through `sample_id`
-- hard negatives: only retrieval loss, not teacher cache
-
 Training command later:
+
+```bash
+python src/train/train_phi3_mmdocir.py --config configs/
+  train_config_phi3_smoke32.yaml
+```
 
 ```bash
 python src/train/train_phi3_mmdocir.py --config configs/train_config_phi3_mmdocir.yaml
