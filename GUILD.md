@@ -215,8 +215,7 @@ For full-data training, switch all three paths to `mmdocir-triplets-k1-full`, `a
 Training command later:
 
 ```bash
-python src/train/train_phi3_mmdocir.py --config configs/
-  train_config_phi3_smoke32.yaml
+python src/train/train_phi3_mmdocir.py --config configs/train_config_phi3_smoke32.yaml
 ```
 
 ```bash

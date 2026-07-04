@@ -20,6 +20,9 @@ class ColPhi3ForEmbedding(nn.Module):
 
     def __init__(self, model_name_or_path: str, projection_dim: int = 128, torch_dtype=torch.bfloat16):
         super().__init__()
+        from scripts.phi3_compat import patch_phi3_auto_image_processor_register
+
+        patch_phi3_auto_image_processor_register()
         self.backbone = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             torch_dtype=torch_dtype,

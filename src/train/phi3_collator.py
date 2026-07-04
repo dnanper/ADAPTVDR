@@ -19,8 +19,10 @@ class Phi3MMDocIRCollator:
         query_template: str = "<|user|>\n{query_instruction}\nquery: {query}<|end|>\n<|assistant|>\n",
         doc_template: str = "<|user|>\n{doc_instruction}\n<|image_1|>\nWhat is shown in this image?<|end|>\n<|assistant|>\n",
     ):
+        from scripts.phi3_compat import patch_phi3_auto_image_processor_register
         from transformers import AutoProcessor
 
+        patch_phi3_auto_image_processor_register()
         self.processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,
