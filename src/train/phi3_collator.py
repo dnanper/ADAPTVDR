@@ -2,6 +2,8 @@ import math
 from typing import Any, Dict, List, Optional
 
 from PIL import Image
+import torch
+import torch.nn.functional as F
 
 
 class Phi3MMDocIRCollator:
@@ -11,7 +13,7 @@ class Phi3MMDocIRCollator:
         self,
         model_path: str,
         max_length: int = 2048,
-        image_size: Optional[int] = 1344,
+        image_size: Optional[int] = None,
         min_pixels: int = 4096,
         max_pixels: int = 1048576,
         query_instruction: str = "Represent the user's input.",
@@ -73,7 +75,72 @@ class Phi3MMDocIRCollator:
         return (input_ids != self.image_token_id) & inputs["attention_mask"].bool()
 
     def make_doc_token_mask(self, inputs: Dict[str, Any]):
-        return (inputs["input_ids"] == self.image_token_id) & inputs["attention_mask"].bool()
+        spatial_mask, _ = self.make_doc_token_mask_and_grid(inputs)
+        return spatial_mask
+
+    def make_doc_token_mask_and_grid(self, inputs: Dict[str, Any]):
+        if "image_sizes" in inputs:
+            return self._make_phi3_local_spatial_mask(inputs)
+
+        valid = inputs["attention_mask"].bool()
+        image_mask = (inputs["input_ids"] == self.image_token_id) & valid
+        if bool(image_mask.any()):
+            return image_mask, None
+        return (inputs["input_ids"] < 0) & valid, None
+
+    def _normalise_image_sizes(self, image_sizes: Any) -> List[List[int]]:
+        if isinstance(image_sizes, torch.Tensor):
+            values = image_sizes.detach().cpu()
+            if values.dim() == 1:
+                values = values.unsqueeze(0)
+            return [[int(v) for v in row[:2].tolist()] for row in values]
+
+        normalised = []
+        for item in image_sizes:
+            if isinstance(item, torch.Tensor):
+                item = item.detach().cpu().flatten().tolist()
+            normalised.append([int(item[0]), int(item[1])])
+        return normalised
+
+    def _make_phi3_local_spatial_mask(self, inputs: Dict[str, Any]):
+        input_ids = inputs["input_ids"]
+        valid = inputs["attention_mask"].bool()
+        image_sizes = self._normalise_image_sizes(inputs["image_sizes"])
+        spatial_mask = torch.zeros_like(valid)
+        grids = []
+
+        for batch_idx, image_size in enumerate(image_sizes):
+            height, width = image_size
+            h_crop = max(1, height // 336)
+            w_crop = max(1, width // 336)
+            local_h = h_crop * 12
+            local_w = w_crop * 12
+            image_positions = ((input_ids[batch_idx] < 0) & valid[batch_idx]).nonzero(as_tuple=False).squeeze(-1)
+            expected_image_tokens = local_h * (local_w + 1) + 1 + 12 * 13
+            if image_positions.numel() < expected_image_tokens:
+                raise ValueError(
+                    "Phi3 image tokens were truncated before the local/global HD layout was complete: "
+                    f"got {int(image_positions.numel())}, expected at least {expected_image_tokens}. "
+                    "Increase max_length or reduce max_pixels."
+                )
+
+            cursor = 0
+            for _ in range(local_h):
+                row_positions = image_positions[cursor: cursor + local_w]
+                spatial_mask[batch_idx, row_positions] = True
+                cursor += local_w + 1
+            grids.append(torch.tensor([1, local_h, local_w], dtype=torch.long))
+
+        grid_tensor = torch.stack(grids, dim=0)
+        mask_counts = spatial_mask.sum(dim=1).cpu()
+        grid_counts = (grid_tensor[:, 1] * grid_tensor[:, 2]).cpu()
+        if not torch.equal(mask_counts, grid_counts):
+            raise ValueError(
+                "Phi3 local spatial mask/grid mismatch: "
+                f"mask={mask_counts.tolist()}, grid={grid_counts.tolist()}"
+            )
+
+        return spatial_mask, grid_tensor
 
     def _process_queries(self, queries: List[str]) -> Dict[str, Any]:
         prompts = [
@@ -91,18 +158,58 @@ class Phi3MMDocIRCollator:
         )
 
     def _process_docs(self, images: List[Image.Image]) -> Dict[str, Any]:
-        prompts = [self.doc_template.format(doc_instruction=self.doc_instruction) for _ in images]
-        resized = [self._resize_page(img) for img in images]
-        return dict(
-            self.processor(
-                text=prompts,
-                images=resized,
-                padding=True,
-                truncation=True,
-                max_length=self.max_length,
-                return_tensors="pt",
-            )
-        )
+        prompt = self.doc_template.format(doc_instruction=self.doc_instruction)
+        outputs = []
+        for image in images:
+            outputs.append(dict(
+                self.processor(
+                    text=prompt,
+                    images=[self._resize_page(image)],
+                    padding=True,
+                    truncation=True,
+                    max_length=self.max_length,
+                    return_tensors="pt",
+                )
+            ))
+        return self._merge_processor_outputs(outputs)
+
+    def _merge_processor_outputs(self, outputs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        merged: Dict[str, Any] = {}
+        keys = outputs[0].keys()
+        for key in keys:
+            values = [out[key] for out in outputs]
+            if not all(isinstance(v, torch.Tensor) for v in values):
+                merged[key] = values
+                continue
+
+            if key in {"input_ids", "attention_mask"}:
+                pad_value = 0
+                if key == "input_ids":
+                    pad_value = int(getattr(self.processor.tokenizer, "pad_token_id", 0) or 0)
+                merged[key] = torch.nn.utils.rnn.pad_sequence(
+                    [v.squeeze(0) for v in values],
+                    batch_first=True,
+                    padding_value=pad_value,
+                )
+                continue
+
+            shapes = [tuple(v.shape[1:]) for v in values]
+            if len(set(shapes)) == 1:
+                merged[key] = torch.cat(values, dim=0)
+                continue
+
+            if values[0].dim() >= 3 and all(v.shape[0] == 1 for v in values):
+                max_len = max(v.shape[1] for v in values)
+                padded = []
+                for v in values:
+                    pad_len = max_len - v.shape[1]
+                    pad = [0, 0] * (v.dim() - 2) + [0, pad_len]
+                    padded.append(F.pad(v, pad))
+                merged[key] = torch.cat(padded, dim=0)
+                continue
+
+            merged[key] = values
+        return merged
 
     def __call__(self, batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         queries = [item["query"] for item in batch]
@@ -113,13 +220,17 @@ class Phi3MMDocIRCollator:
 
         query_inputs = self._process_queries(queries)
         doc_inputs = self._process_docs(all_doc_images)
+        doc_token_mask, doc_image_grid_thw = self.make_doc_token_mask_and_grid(doc_inputs)
 
-        return {
+        result = {
             "query_inputs": query_inputs,
             "doc_inputs": doc_inputs,
             "query_token_mask": self.make_query_token_mask(query_inputs),
-            "doc_token_mask": self.make_doc_token_mask(doc_inputs),
+            "doc_token_mask": doc_token_mask,
             "pos_count": len(batch),
             "sample_ids": sample_ids,
             "queries": queries,
         }
+        if doc_image_grid_thw is not None:
+            result["doc_image_grid_thw"] = doc_image_grid_thw
+        return result

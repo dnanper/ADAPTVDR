@@ -52,6 +52,10 @@ def move_to_device(batch: dict, device: torch.device) -> dict:
     return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
 
+def clone_tensor_inputs(batch: dict) -> dict:
+    return {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+
+
 def make_optimizer(params, lr: float):
     try:
         import bitsandbytes as bnb
@@ -199,8 +203,8 @@ def main() -> None:
                 queries = list(batch.get("queries", []))[:pos_count]
 
                 need_attn = teacher_prior is not None and agree_lambda_prior > 0
-                q_out = model(**query_inputs)
-                d_out = model(**doc_inputs, output_attentions=need_attn)
+                q_out = model(**clone_tensor_inputs(query_inputs))
+                d_out = model(**clone_tensor_inputs(doc_inputs), output_attentions=need_attn)
                 q_emb, d_emb = q_out.hidden_states, d_out.hidden_states
                 q_mask = batch.get("query_token_mask", q_out.attention_mask.bool()).to(device)
                 d_mask = batch.get("doc_token_mask", d_out.attention_mask.bool()).to(device)
@@ -212,9 +216,9 @@ def main() -> None:
                 matched_prior = 0
 
                 if sample_ids and any(s is not None for s in sample_ids):
-                    # Phi3 processor does not expose Qwen-style image_grid_thw; leave grid
-                    # resizing off until a real Phi patch-grid mapper is added.
                     student_grids = None
+                    if "doc_image_grid_thw" in batch:
+                        student_grids = list(batch["doc_image_grid_thw"][:pos_count])
                     if teacher_query is not None and agree_lambda_query > 0:
                         student_scores = extract_query_patch_scores_from_similarity(
                             q_emb=q_emb[:pos_count],
@@ -227,6 +231,7 @@ def main() -> None:
                             tokenizer=collator.processor.tokenizer,
                             image_token_id=collator.image_token_id,
                             mode=str(cfg.loss.get("agree_student_score_mode", "softmax_sum")),
+                            d_image_mask=d_mask[:pos_count],
                         )
                         align, matched_query = attention_alignment_loss(
                             student_scores,
@@ -234,6 +239,7 @@ def main() -> None:
                             loss_type=str(cfg.loss.get("agree_loss_type", "kl")),
                             student_grids=student_grids,
                             teacher_grids=teacher_query.get_many_grids(sample_ids),
+                            allow_1d_resize=bool(cfg.loss.get("allow_1d_teacher_resize", False)),
                         )
                         if matched_query:
                             agree_query_value = align.to(loss.device)
@@ -247,6 +253,7 @@ def main() -> None:
                             image_token_id=collator.image_token_id,
                             source_mode=teacher_prior.source_mode,
                             instruction_token_ids=prior_instruction_token_ids,
+                            image_token_mask=d_mask[:pos_count],
                         )
                         align, matched_prior = attention_alignment_loss(
                             student_scores,
@@ -254,6 +261,7 @@ def main() -> None:
                             loss_type=str(cfg.loss.get("agree_loss_type", "kl")),
                             student_grids=student_grids,
                             teacher_grids=teacher_prior.get_many_grids(sample_ids),
+                            allow_1d_resize=bool(cfg.loss.get("allow_1d_teacher_resize", False)),
                         )
                         if matched_prior:
                             agree_prior_value = align.to(loss.device)

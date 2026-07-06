@@ -28,3 +28,17 @@ def patch_phi3_auto_image_processor_register() -> None:
 
     _safe_register._phi3_string_safe = True  # type: ignore[attr-defined]
     AutoImageProcessor.register = _safe_register
+
+    try:
+        from transformers.cache_utils import DynamicCache
+    except Exception:
+        return
+
+    if not hasattr(DynamicCache, "from_legacy_cache"):
+        @classmethod
+        def _from_legacy_cache(cls, past_key_values=None):
+            if isinstance(past_key_values, cls):
+                return past_key_values
+            return cls()
+
+        DynamicCache.from_legacy_cache = _from_legacy_cache

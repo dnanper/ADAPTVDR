@@ -99,10 +99,22 @@ def _all_non_image_positions(
     image_token_id: int,
 ) -> torch.Tensor:
     valid = attention_mask.bool()
-    positions = ((input_ids != image_token_id) & valid).nonzero(as_tuple=False).squeeze(-1)
+    positions = (~_image_token_mask(input_ids, attention_mask, image_token_id) & valid).nonzero(as_tuple=False).squeeze(-1)
     if positions.numel() == 0:
         raise ValueError("No non-image source tokens found")
     return positions
+
+
+def _image_token_mask(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    image_token_id: int,
+) -> torch.Tensor:
+    valid = attention_mask.bool()
+    explicit = (input_ids == image_token_id) & valid
+    if bool(explicit.any()):
+        return explicit
+    return (input_ids < 0) & valid
 
 
 def _query_positions(
@@ -122,6 +134,7 @@ def extract_prior_patch_scores(
     image_token_id: int,
     source_mode: str,
     instruction_token_ids: Optional[Sequence[int]] = None,
+    image_token_mask: Optional[torch.Tensor] = None,
 ) -> List[torch.Tensor]:
     """Extract document-only patch scores from student attentions.
 
@@ -139,7 +152,10 @@ def extract_prior_patch_scores(
     for batch_idx in range(input_ids.shape[0]):
         input_ids_b = input_ids[batch_idx]
         attention_mask_b = attention_mask[batch_idx]
-        image_positions = ((input_ids_b == image_token_id) & attention_mask_b.bool()).nonzero(as_tuple=False).squeeze(-1)
+        if image_token_mask is not None:
+            image_positions = (image_token_mask[batch_idx] & attention_mask_b.bool()).nonzero(as_tuple=False).squeeze(-1)
+        else:
+            image_positions = _image_token_mask(input_ids_b, attention_mask_b, image_token_id).nonzero(as_tuple=False).squeeze(-1)
         if image_positions.numel() == 0:
             scores.append(torch.zeros(0, device=attn_avg.device))
             continue
@@ -181,6 +197,7 @@ def extract_query_patch_scores_from_similarity(
     tokenizer,
     image_token_id: int,
     mode: str = "softmax_sum",
+    d_image_mask: Optional[torch.Tensor] = None,
 ) -> List[torch.Tensor]:
     """Build student patch scores from query-page interaction.
 
@@ -209,9 +226,14 @@ def extract_query_patch_scores_from_similarity(
         except ValueError:
             scores.append(torch.zeros(0, device=q_emb.device))
             continue
-        image_positions = (
-            (d_input_ids[idx] == image_token_id) & d_attention_mask[idx].bool()
-        ).nonzero(as_tuple=False).squeeze(-1)
+        if d_image_mask is not None:
+            image_positions = (d_image_mask[idx] & d_attention_mask[idx].bool()).nonzero(as_tuple=False).squeeze(-1)
+        else:
+            image_positions = _image_token_mask(
+                d_input_ids[idx],
+                d_attention_mask[idx],
+                image_token_id,
+            ).nonzero(as_tuple=False).squeeze(-1)
         if image_positions.numel() == 0:
             scores.append(torch.zeros(0, device=q_emb.device))
             continue
@@ -235,6 +257,7 @@ def attention_alignment_loss(
     loss_type: str = "kl",
     student_grids: Optional[Sequence[Optional[torch.Tensor]]] = None,
     teacher_grids: Optional[Sequence[Optional[torch.Tensor]]] = None,
+    allow_1d_resize: bool = False,
 ) -> Tuple[torch.Tensor, int]:
     """Align variable-length patch score vectors.
 
@@ -257,7 +280,13 @@ def attention_alignment_loss(
                 student_numel=student.numel(),
             )
             if teacher is None:
-                continue
+                if allow_1d_resize:
+                    teacher = _resize_teacher_scores_1d(
+                        teacher=teacher_scores[idx].to(device=student.device, dtype=student.dtype),
+                        student_numel=student.numel(),
+                    )
+                else:
+                    continue
 
         if loss_type == "raw_cosine":
             losses.append(
@@ -299,6 +328,16 @@ def attention_alignment_loss(
     return torch.stack(losses).mean(), len(losses)
 
 
+def _resize_teacher_scores_1d(teacher: torch.Tensor, student_numel: int) -> torch.Tensor:
+    """Fallback when a model, such as Phi3-Vision, does not expose an image grid."""
+    return F.interpolate(
+        teacher.float().reshape(1, 1, -1),
+        size=int(student_numel),
+        mode="linear",
+        align_corners=False,
+    ).reshape(-1).to(dtype=teacher.dtype, device=teacher.device)
+
+
 def _grid_hw_for_length(grid: Optional[torch.Tensor], length: int) -> Optional[Tuple[int, int]]:
     if grid is None:
         return None
@@ -310,6 +349,10 @@ def _grid_hw_for_length(grid: Optional[torch.Tensor], length: int) -> Optional[T
             return h, w
         if t * h * w == length:
             return t * h, w
+        if h % 2 == 0 and w % 2 == 0 and (h // 2) * (w // 2) == length:
+            return h // 2, w // 2
+        if t * h * w == length * 4 and h % 2 == 0 and w % 2 == 0:
+            return t * (h // 2), w // 2
     if len(values) >= 2:
         h, w = values[-2], values[-1]
         if h * w == length:

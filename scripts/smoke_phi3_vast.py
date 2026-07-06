@@ -23,6 +23,7 @@ import pandas as pd
 import torch
 
 from scripts.colphi3_embedding import ColPhi3ForEmbedding
+from train.dataset import TripletDataset
 from train.loss import MatryoshkaAugmentedMaxSimLoss
 from train.phi3_collator import Phi3MMDocIRCollator
 from train.teacher_attention import (
@@ -47,6 +48,16 @@ def _load_first_row(triplet_dir: str) -> dict[str, Any]:
     print(f"[data] positive_bytes={len(row['positive'])}")
     print(f"[data] hard_negatives={len(row.get('hard_negatives') or [])}")
     return row
+
+
+def _load_first_item(triplet_dir: str) -> dict[str, Any]:
+    _load_first_row(triplet_dir)
+    dataset = TripletDataset(triplet_dir, hard_neg_k=1)
+    item = dataset[0]
+    print(f"[dataset] sample_id={item.get('sample_id')}")
+    print(f"[dataset] image_size={item['image'].size}")
+    print(f"[dataset] hard_neg_images={len(item.get('hard_neg_images') or [])}")
+    return item
 
 
 def inspect_cache(cache_dir: str) -> dict[str, Any]:
@@ -79,7 +90,7 @@ def inspect_cache(cache_dir: str) -> dict[str, Any]:
 
 
 def build_batch(args: argparse.Namespace):
-    row = _load_first_row(args.triplet_dir)
+    row = _load_first_item(args.triplet_dir)
     collator = Phi3MMDocIRCollator(
         args.model,
         image_size=args.image_size,
@@ -92,15 +103,21 @@ def build_batch(args: argparse.Namespace):
     print(f"[collator] image_token_id={collator.image_token_id}")
     print(f"[collator] query_input_ids={tuple(batch['query_inputs']['input_ids'].shape)} query_tokens={q_tokens}")
     print(f"[collator] doc_input_ids={tuple(batch['doc_inputs']['input_ids'].shape)} doc_image_tokens={d_tokens}")
+    if "doc_image_grid_thw" in batch:
+        print(f"[collator] doc_image_grid_thw={batch['doc_image_grid_thw'].tolist()}")
     if q_tokens <= 0:
         raise AssertionError("query_token_mask is empty")
     if d_tokens <= 0:
-        raise AssertionError("doc_token_mask is empty; image token detection is broken")
+        raise AssertionError("doc_token_mask is empty; Phi3 image placeholder detection failed")
     return row, collator, batch
 
 
 def _to_device(inputs: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+
+
+def _clone_tensor_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    return {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
 
 
 def forward_once(args: argparse.Namespace, *, output_attentions: bool = True):
@@ -111,8 +128,8 @@ def forward_once(args: argparse.Namespace, *, output_attentions: bool = True):
     q_inputs = _to_device(batch["query_inputs"], device)
     d_inputs = _to_device(batch["doc_inputs"], device)
     with torch.no_grad():
-        q_out = model(**q_inputs)
-        d_out = model(**d_inputs, output_attentions=output_attentions)
+        q_out = model(**_clone_tensor_inputs(q_inputs))
+        d_out = model(**_clone_tensor_inputs(d_inputs), output_attentions=output_attentions)
     q = q_out.hidden_states[batch["query_token_mask"].to(device)]
     d = d_out.hidden_states[batch["doc_token_mask"].to(device)]
     print(f"[forward] q_out={tuple(q_out.hidden_states.shape)} d_out={tuple(d_out.hidden_states.shape)}")
@@ -150,6 +167,7 @@ def _check_alignment(
     args: argparse.Namespace,
     row: dict[str, Any],
     collator: Phi3MMDocIRCollator,
+    batch: dict[str, Any],
     q_out: Any,
     d_out: Any,
     q_inputs: dict[str, Any],
@@ -157,7 +175,8 @@ def _check_alignment(
 ) -> None:
     sid = row["sample_id"]
     query_cache = TeacherAttentionCache(args.query_cache)
-    prior_cache = TeacherAttentionCache(args.prior_cache)
+    doc_mask = batch["doc_token_mask"][:1].to(d_inputs["input_ids"].device)
+    student_grids = list(batch["doc_image_grid_thw"][:1]) if "doc_image_grid_thw" in batch else None
 
     student_query_scores = extract_query_patch_scores_from_similarity(
         q_emb=q_out.hidden_states,
@@ -169,29 +188,14 @@ def _check_alignment(
         queries=[row["query"]],
         tokenizer=collator.processor.tokenizer,
         image_token_id=collator.image_token_id,
+        d_image_mask=doc_mask,
     )
     teacher_query = query_cache.get_many([sid])
     loss_q, matched_q = attention_alignment_loss(
         student_scores=student_query_scores,
         teacher_scores=teacher_query,
+        student_grids=student_grids,
         teacher_grids=query_cache.get_many_grids([sid]),
-        loss_type="kl",
-    )
-
-    prior_instruction_token_ids = collator.processor.tokenizer.encode(collator.doc_instruction, add_special_tokens=False)
-    student_prior_scores = extract_prior_patch_scores(
-        attentions=d_out.attentions,
-        input_ids=d_inputs["input_ids"][:1],
-        attention_mask=d_inputs["attention_mask"][:1],
-        image_token_id=collator.image_token_id,
-        source_mode=prior_cache.source_mode,
-        instruction_token_ids=prior_instruction_token_ids,
-    )
-    teacher_prior = prior_cache.get_many([sid])
-    loss_p, matched_p = attention_alignment_loss(
-        student_scores=student_prior_scores,
-        teacher_scores=teacher_prior,
-        teacher_grids=prior_cache.get_many_grids([sid]),
         loss_type="kl",
     )
 
@@ -202,6 +206,32 @@ def _check_alignment(
         f"student_len={len(student_query_scores[0]) if student_query_scores else 0}",
         f"teacher_len={len(teacher_query[0]) if teacher_query[0] is not None else 0}",
     )
+    if matched_q <= 0:
+        raise AssertionError("Query teacher alignment matched zero samples")
+
+    if not args.include_prior_attn:
+        print("[align] prior skipped; pass --include-prior-attn to test attention-based prior alignment")
+        return
+
+    prior_cache = TeacherAttentionCache(args.prior_cache)
+    prior_instruction_token_ids = collator.processor.tokenizer.encode(collator.doc_instruction, add_special_tokens=False)
+    student_prior_scores = extract_prior_patch_scores(
+        attentions=d_out.attentions,
+        input_ids=d_inputs["input_ids"][:1],
+        attention_mask=d_inputs["attention_mask"][:1],
+        image_token_id=collator.image_token_id,
+        source_mode=prior_cache.source_mode,
+        instruction_token_ids=prior_instruction_token_ids,
+        image_token_mask=doc_mask,
+    )
+    teacher_prior = prior_cache.get_many([sid])
+    loss_p, matched_p = attention_alignment_loss(
+        student_scores=student_prior_scores,
+        teacher_scores=teacher_prior,
+        student_grids=student_grids,
+        teacher_grids=prior_cache.get_many_grids([sid]),
+        loss_type="kl",
+    )
     print(
         "[align] prior",
         f"loss={float(loss_p):.6f}",
@@ -209,21 +239,27 @@ def _check_alignment(
         f"student_len={len(student_prior_scores[0]) if student_prior_scores else 0}",
         f"teacher_len={len(teacher_prior[0]) if teacher_prior[0] is not None else 0}",
     )
-    if matched_q <= 0 and matched_p <= 0:
-        raise AssertionError("Both teacher alignment paths matched zero samples")
+    if matched_p <= 0:
+        raise AssertionError("Prior teacher alignment matched zero samples")
 
 
 def alignment_smoke(args: argparse.Namespace) -> None:
-    row, collator, _, q_out, d_out, q_inputs, d_inputs = forward_once(args, output_attentions=True)
-    _check_alignment(args, row, collator, q_out, d_out, q_inputs, d_inputs)
+    row, collator, batch, q_out, d_out, q_inputs, d_inputs = forward_once(
+        args,
+        output_attentions=args.include_prior_attn,
+    )
+    _check_alignment(args, row, collator, batch, q_out, d_out, q_inputs, d_inputs)
 
 
 def full_smoke(args: argparse.Namespace) -> None:
     inspect_cache(args.prior_cache)
     inspect_cache(args.query_cache)
-    row, collator, batch, q_out, d_out, q_inputs, d_inputs = forward_once(args, output_attentions=True)
+    row, collator, batch, q_out, d_out, q_inputs, d_inputs = forward_once(
+        args,
+        output_attentions=args.include_prior_attn,
+    )
     _check_loss(args, batch, q_out, d_out)
-    _check_alignment(args, row, collator, q_out, d_out, q_inputs, d_inputs)
+    _check_alignment(args, row, collator, batch, q_out, d_out, q_inputs, d_inputs)
 
 
 def main() -> None:
@@ -239,6 +275,7 @@ def main() -> None:
     parser.add_argument("--image-size", type=int, default=None)
     parser.add_argument("--min-pixels", type=int, default=4096)
     parser.add_argument("--max-pixels", type=int, default=1048576)
+    parser.add_argument("--include-prior-attn", action="store_true")
     args = parser.parse_args()
 
     if args.test == "all":
@@ -251,7 +288,7 @@ def main() -> None:
     if args.test == "collator":
         build_batch(args)
     if args.test == "forward":
-        forward_once(args, output_attentions=True)
+        forward_once(args, output_attentions=args.include_prior_attn)
     if args.test == "loss":
         loss_smoke(args)
     if args.test == "align":

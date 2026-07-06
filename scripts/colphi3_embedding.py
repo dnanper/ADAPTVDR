@@ -4,7 +4,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.modeling_outputs import ModelOutput
 
 
@@ -23,10 +23,19 @@ class ColPhi3ForEmbedding(nn.Module):
         from scripts.phi3_compat import patch_phi3_auto_image_processor_register
 
         patch_phi3_auto_image_processor_register()
+        config = AutoConfig.from_pretrained(
+            model_name_or_path,
+            trust_remote_code=True,
+            attn_implementation="eager",
+        )
+        config._attn_implementation = "eager"
+        config._attn_implementation_internal = "eager"
         self.backbone = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
+            config=config,
             torch_dtype=torch_dtype,
             trust_remote_code=True,
+            attn_implementation="eager",
         )
         hidden_size = getattr(self.backbone.config, "hidden_size", None)
         if hidden_size is None:
@@ -49,6 +58,7 @@ class ColPhi3ForEmbedding(nn.Module):
         attention_mask = kwargs.get("attention_mask")
         output_attentions = bool(kwargs.pop("output_attentions", False))
         kwargs.pop("labels", None)
+        kwargs["use_cache"] = False
 
         outputs = self.backbone(
             **kwargs,
@@ -57,6 +67,8 @@ class ColPhi3ForEmbedding(nn.Module):
             return_dict=True,
         )
         last_hidden = outputs.hidden_states[-1] if outputs.hidden_states else outputs.last_hidden_state
+        if self.projection.weight.dtype != last_hidden.dtype:
+            self.projection.to(dtype=last_hidden.dtype)
         projected = self.projection(last_hidden)
         if attention_mask is not None:
             projected = projected * attention_mask.unsqueeze(-1).to(projected.dtype)

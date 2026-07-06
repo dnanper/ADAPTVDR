@@ -6,7 +6,7 @@
 cd /workspace/vidore-thesis
 mkdir -p logs models dataset checkpoints configs/runtime
 pip install -U "transformers>=4.51.0" "accelerate>=0.26.0" "qwen-vl-utils>=0.0.8" \
-  "huggingface_hub" "safetensors" "pyarrow" "pandas" "pillow" "tqdm" "pyyaml" \
+  "huggingface_hub" "safetensors" "pyarrow" "pandas" "polars" "pillow" "tqdm" "pyyaml" \
   "peft" "bitsandbytes"
 ```
 
