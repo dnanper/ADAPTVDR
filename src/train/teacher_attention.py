@@ -163,11 +163,15 @@ def extract_prior_patch_scores(
         if source_mode == SOURCE_MODE_INSTRUCTION:
             if not instruction_token_ids:
                 raise ValueError("instruction_token_ids are required for source_mode='instruction'")
-            source_positions = _instruction_positions(
-                input_ids=input_ids_b,
-                attention_mask=attention_mask_b,
-                instruction_token_ids=instruction_token_ids,
-            )
+            try:
+                source_positions = _instruction_positions(
+                    input_ids=input_ids_b,
+                    attention_mask=attention_mask_b,
+                    instruction_token_ids=instruction_token_ids,
+                )
+            except ValueError:
+                scores.append(torch.zeros(0, device=attn_avg.device))
+                continue
         elif source_mode == SOURCE_MODE_ALL_NON_IMAGE:
             source_positions = _all_non_image_positions(
                 input_ids=input_ids_b,

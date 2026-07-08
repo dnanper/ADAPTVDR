@@ -136,6 +136,7 @@ def main() -> None:
     parser.add_argument("--pages", default=None)
     parser.add_argument("--annotations", default=None)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--max-queries", type=int, default=None, help="Evaluate only the first N annotation rows.")
     parser.add_argument("--image-size", type=int, default=None, help="Fixed square resize. Omit for dynamic pixel bounds.")
     parser.add_argument("--min-pixels", type=int, default=4096)
     parser.add_argument("--max-pixels", type=int, default=1048576)
@@ -175,6 +176,8 @@ def main() -> None:
 
     pages_by_doc = load_pages(pages_path)
     annotations = list(read_jsonl(ann_path))
+    if args.max_queries is not None:
+        annotations = annotations[: max(0, int(args.max_queries))]
     queries = [annotation_query(row) for row in annotations]
     query_embs = encode_queries(model, collator, queries, args.batch_size, device)
 

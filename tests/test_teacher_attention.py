@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from scripts.precompute_teacher_attn import _prepare_output_dir, _save_batch_shard
-from train.teacher_attention import TeacherAttentionCache, attention_alignment_loss
+from train.teacher_attention import TeacherAttentionCache, attention_alignment_loss, extract_prior_patch_scores
 
 
 class TestTeacherAttention(unittest.TestCase):
@@ -54,6 +54,20 @@ class TestTeacherAttention(unittest.TestCase):
 
         self.assertEqual(matched, 0)
         self.assertEqual(float(loss), 0.0)
+
+    def test_prior_extraction_skips_missing_instruction_span(self):
+        attentions = (torch.ones(1, 1, 4, 4),)
+        scores = extract_prior_patch_scores(
+            attentions=attentions,
+            input_ids=torch.tensor([[11, -1, -2, 12]]),
+            attention_mask=torch.tensor([[1, 1, 1, 1]]),
+            image_token_id=99,
+            source_mode="instruction",
+            instruction_token_ids=[42, 43],
+        )
+
+        self.assertEqual(len(scores), 1)
+        self.assertEqual(scores[0].numel(), 0)
 
 
 if __name__ == "__main__":

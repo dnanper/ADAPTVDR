@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
-from scripts.colphi3_embedding import ColPhi3ForEmbedding
+from scripts.colphi3_embedding import ColPhi3ForEmbedding, ensure_phi3_img_projection_bias
 from train.dataset import TripletDataset
 from train.loss import AugmentedMaxSimLoss, MatryoshkaAugmentedMaxSimLoss
 from train.phi3_collator import Phi3MMDocIRCollator
@@ -63,6 +63,11 @@ def make_optimizer(params, lr: float):
         return bnb.optim.PagedAdamW8bit(params, lr=lr)
     except Exception:
         return torch.optim.AdamW(params, lr=lr)
+
+
+def require_finite(name: str, value: torch.Tensor) -> None:
+    if not torch.isfinite(value).all():
+        raise FloatingPointError(f"{name} contains non-finite values")
 
 
 class TrainMetricLogger:
@@ -124,13 +129,43 @@ def main() -> None:
         bias=cfg.lora.bias,
         target_modules=list(cfg.lora.target_modules),
         task_type="FEATURE_EXTRACTION",
-        modules_to_save=["projection"],
+        modules_to_save=["linear_head"],
     )
     model = PeftModel.from_pretrained(model, args.checkpoint, is_trainable=True) if args.checkpoint else get_peft_model(model, lora_cfg)
+    ensure_phi3_img_projection_bias(model)
     if cfg.training.gradient_checkpointing:
         model.enable_input_require_grads()
         model.gradient_checkpointing_enable()
     model.train()
+
+    teacher_prior = None
+    teacher_query = None
+    agree_lambda_prior = float(cfg.loss.get("agree_lambda_prior", 0.0))
+    agree_lambda_query = float(cfg.loss.get("agree_lambda_query", 0.0))
+    doc_instruction = str(cfg.data.get("doc_instruction", "Represent the user's input."))
+    query_instruction = str(cfg.data.get("query_instruction", "Represent the user's input."))
+    if cfg.data.get("attn_cache_path_prior"):
+        teacher_prior = TeacherAttentionCache(cfg.data.attn_cache_path_prior)
+        ensure_cache_prompt_mode(teacher_prior.metadata, "image_only")
+        doc_instruction = str(teacher_prior.metadata.get("instruction", doc_instruction))
+        print(
+            f"Teacher prior cache: {cfg.data.attn_cache_path_prior}  "
+            f"(source_mode={teacher_prior.source_mode}, instruction={doc_instruction!r})"
+        )
+    else:
+        agree_lambda_prior = 0.0
+    if cfg.data.get("attn_cache_path_query"):
+        teacher_query = TeacherAttentionCache(cfg.data.attn_cache_path_query)
+        ensure_cache_prompt_mode(teacher_query.metadata, "query_image")
+        query_instruction = str(teacher_query.metadata.get("instruction", query_instruction))
+        print(
+            f"Teacher query cache: {cfg.data.attn_cache_path_query}  "
+            f"(source_mode={teacher_query.source_mode}, instruction={query_instruction!r})"
+        )
+    else:
+        agree_lambda_query = 0.0
+    if teacher_prior is not None and agree_lambda_prior <= 0:
+        print("[WARN] prior teacher cache provided but agree_lambda_prior <= 0, so prior alignment is disabled")
 
     collator = Phi3MMDocIRCollator(
         model_path=cfg.model.name_or_path,
@@ -138,13 +173,15 @@ def main() -> None:
         image_size=cfg.data.get("image_size", 1344),
         min_pixels=int(cfg.data.get("min_pixels", 4096)),
         max_pixels=int(cfg.data.get("max_pixels", 1048576)),
-        query_instruction=str(cfg.data.get("query_instruction", "Represent the user's input.")),
-        doc_instruction=str(cfg.data.get("doc_instruction", "Represent the user's input.")),
+        query_instruction=query_instruction,
+        doc_instruction=doc_instruction,
     )
-    prior_instruction_token_ids = collator.processor.tokenizer.encode(
-        collator.doc_instruction,
-        add_special_tokens=False,
-    )
+    prior_instruction_token_ids = None
+    if teacher_prior is not None and teacher_prior.source_mode == "instruction":
+        prior_instruction_token_ids = collator.processor.tokenizer.encode(
+            doc_instruction,
+            add_special_tokens=False,
+        )
     dataset = TripletDataset(cfg.data.train_data_path, hard_neg_k=int(cfg.data.get("hard_neg_k", 1)))
     dataloader = DataLoader(
         dataset,
@@ -161,21 +198,6 @@ def main() -> None:
         loss_fn = MatryoshkaAugmentedMaxSimLoss(dims=dims, temperature=temperature)
     else:
         loss_fn = AugmentedMaxSimLoss(temperature=temperature)
-
-    teacher_prior = None
-    teacher_query = None
-    agree_lambda_prior = float(cfg.loss.get("agree_lambda_prior", 0.0))
-    agree_lambda_query = float(cfg.loss.get("agree_lambda_query", 0.0))
-    if cfg.data.get("attn_cache_path_prior"):
-        teacher_prior = TeacherAttentionCache(cfg.data.attn_cache_path_prior)
-        ensure_cache_prompt_mode(teacher_prior.metadata, "image_only")
-    else:
-        agree_lambda_prior = 0.0
-    if cfg.data.get("attn_cache_path_query"):
-        teacher_query = TeacherAttentionCache(cfg.data.attn_cache_path_query)
-        ensure_cache_prompt_mode(teacher_query.metadata, "query_image")
-    else:
-        agree_lambda_query = 0.0
 
     optimizer = make_optimizer((p for p in model.parameters() if p.requires_grad), cfg.training.learning_rate)
     grad_accum = int(cfg.training.gradient_accumulation_steps)
@@ -206,9 +228,12 @@ def main() -> None:
                 q_out = model(**clone_tensor_inputs(query_inputs))
                 d_out = model(**clone_tensor_inputs(doc_inputs), output_attentions=need_attn)
                 q_emb, d_emb = q_out.hidden_states, d_out.hidden_states
+                require_finite("query embeddings", q_emb)
+                require_finite("document embeddings", d_emb)
                 q_mask = batch.get("query_token_mask", q_out.attention_mask.bool()).to(device)
                 d_mask = batch.get("doc_token_mask", d_out.attention_mask.bool()).to(device)
                 retrieval_loss = loss_fn(q_emb, d_emb, q_mask, d_mask, pos_count=pos_count)
+                require_finite("retrieval loss", retrieval_loss)
                 loss = retrieval_loss
                 agree_query_value = None
                 agree_prior_value = None
@@ -244,6 +269,7 @@ def main() -> None:
                         if matched_query:
                             agree_query_value = align.to(loss.device)
                             loss = loss + agree_lambda_query * agree_query_value
+                            require_finite("query alignment loss", agree_query_value)
 
                     if teacher_prior is not None and agree_lambda_prior > 0:
                         student_scores = extract_prior_patch_scores(
@@ -266,6 +292,9 @@ def main() -> None:
                         if matched_prior:
                             agree_prior_value = align.to(loss.device)
                             loss = loss + agree_lambda_prior * agree_prior_value
+                            require_finite("prior alignment loss", agree_prior_value)
+
+                require_finite("total loss", loss)
 
                 (loss / grad_accum).backward()
                 if (step + 1) % grad_accum == 0:
