@@ -318,3 +318,39 @@ dataset/attn_cache_mmdocir_phi3_query_full/
 checkpoints/colphi3_mmdocir_thesis/
 models/Qwen3-VL-8B-Instruct/   optional if persistent cache not kept
 ```
+
+1. Smoke eval trước, xem checkpoint có sống không
+
+python -u evaluate/evaluate_mmdocir_phi3.py \
+ --model models/Phi-3-vision-128k-instruct \
+ --checkpoint checkpoints/colphi3_5p/final \
+ --eval-root dataset/MMDocIR_Evaluation_Dataset \
+ --batch-size 4 \
+ --max-queries 10 \
+ 2>&1 | tee logs/eval_phi3_5p_10q.log
+
+2. Full MMDocIR paper-style eval
+
+python -u evaluate/evaluate_mmdocir_phi3.py \
+ --model models/Phi-3-vision-128k-instruct \
+ --checkpoint checkpoints/colphi3_5p/final \
+ --eval-root dataset/MMDocIR_Evaluation_Dataset \
+ --batch-size 4 \
+ 2>&1 | tee logs/eval_phi3_5p_full.log
+
+Script này đang đúng hướng paper MMDocIR: dùng MMDocIR_pages.parquet +
+MMDocIR_annotations.jsonl, rank page trong cùng document, in Recall@1, Recall@5,
+Recall@10, nDCG@5.
+
+3. Eval phần giải pháp thesis: adaptive pruning
+
+python -u evaluate/evaluate_mmdocir_phi3.py \
+ --model models/Phi-3-vision-128k-instruct \
+ --checkpoint checkpoints/colphi3_5p/final \
+ --eval-root dataset/MMDocIR_Evaluation_Dataset \
+ --batch-size 4 \
+ --prune-docs \
+ --prune-r-min 0.3 \
+ --prune-r-max 0.9 \
+ --prune-mode linear \
+ 2>&1 | tee logs/eval_phi3_5p_full_pruned.log

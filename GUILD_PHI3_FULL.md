@@ -20,10 +20,7 @@ hf download microsoft/Phi-3-vision-128k-instruct --local-dir models/Phi-3-vision
 Skip if `dataset/mmdocir-triplets-k1-full` already exists.
 
 ```bash
-python scripts/build_mmdocir_triplets.py \
-  --dataset_root dataset/MMDocIR_Train_Dataset \
-  --hard_neg_k 1 --sample-fraction 1.0 --sample-seed 42 \
-  --output_dir dataset/mmdocir-triplets-k1-full
+python scripts/build_mmdocir_triplets.py --dataset_root dataset/MMDocIR_Train_Dataset --hard_neg_k 1 --sample-fraction 1.0 --sample-seed 42 --output_dir dataset/mmdocir-triplets-k1-full
 ```
 
 ## 3. Teacher Cache

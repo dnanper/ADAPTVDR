@@ -43,13 +43,13 @@ python -u scripts/precompute_teacher_attn.py \
 ```bash
 python -u scripts/precompute_teacher_attn.py \
   --teacher-model models/Qwen3-VL-8B-Instruct \
-  --train-data-path dataset/mmdocir-triplets-k1-10p \
-  --output-path dataset/attn_cache_mmdocir_phi3_query_10p \
+  --train-data-path dataset/mmdocir-triplets-k1-5p \
+  --output-path dataset/attn_cache_mmdocir_phi3_query_5p \
   --prompt-mode query_image --source-mode query --layer-index -1 \
-  --batch-size 1 --save-every 1 \
+  --batch-size 42 --save-every 1 \
   --instruction "Represent the user's input." \
   --min-pixels 4096 --max-pixels 1048576 --resume \
-  2>&1 | tee logs/precompute_query_10p.log
+  2>&1 | tee logs/precompute_query_5p.log
 ```
 
 ## 4. Integration Smoke Test
@@ -67,21 +67,21 @@ python scripts/smoke_phi3_vast.py --test all \
 ```bash
 python scripts/make_phi3_runtime_config.py \
   --src configs/train_config_phi3_mmdocir.yaml \
-  --dst configs/runtime/train_config_phi3_10p.yaml \
+  --dst configs/runtime/train_config_phi3_5p.yaml \
   --model models/Phi-3-vision-128k-instruct \
   --dtype bfloat16 \
-  --output-dir checkpoints/colphi3_10p \
-  --train-data-path dataset/mmdocir-triplets-k1-10p \
-  --prior-cache dataset/attn_cache_mmdocir_phi3_prior_10p \
-  --query-cache dataset/attn_cache_mmdocir_phi3_query_10p
+  --output-dir checkpoints/colphi3_5p \
+  --train-data-path dataset/mmdocir-triplets-k1-5p \
+  --prior-cache dataset/attn_cache_mmdocir_phi3_prior_5p \
+  --query-cache dataset/attn_cache_mmdocir_phi3_query_5p
 ```
 
 ## 6. Train 10%
 
 ```bash
 python -u src/train/train_phi3_mmdocir.py \
-  --config configs/runtime/train_config_phi3_10p.yaml \
-  2>&1 | tee logs/train_phi3_10p.log
+  --config configs/runtime/train_config_phi3_5p.yaml \
+  2>&1 | tee logs/train_phi3_5p.log
 ```
 
 Metrics:
