@@ -62,15 +62,7 @@ python scripts/smoke_phi3_vast.py --test all \
 ## 5. Create Full Train Config
 
 ```bash
-python scripts/make_phi3_runtime_config.py \
-  --src configs/train_config_phi3_mmdocir.yaml \
-  --dst configs/runtime/train_config_phi3_full.yaml \
-  --model models/Phi-3-vision-128k-instruct \
-  --dtype bfloat16 \
-  --output-dir checkpoints/colphi3_full \
-  --train-data-path dataset/mmdocir-triplets-k1-full \
-  --prior-cache dataset/attn_cache_mmdocir_phi3_prior_full \
-  --query-cache dataset/attn_cache_mmdocir_phi3_query_full
+python scripts/make_phi3_runtime_config.py  --src configs/train_config_phi3_mmdocir.yaml  --dst configs/runtime/train_config_phi3_full.yaml  --model models/Phi-3-vision-128k-instruct  --dtype bfloat16  --output-dir checkpoints/colphi3_full  --train-data-path dataset/mmdocir-triplets-k1-full  --prior-cache dataset/attn_cache_mmdocir_phi3_prior_full  --query-cache dataset/attn_cache_mmdocir_phi3_query_full
 ```
 
 ## 6. Train Full
