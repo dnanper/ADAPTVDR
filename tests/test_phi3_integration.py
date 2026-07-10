@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import torch
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
+from train.batch_utils import forward_model_in_chunks
 from train.phi3_collator import Phi3MMDocIRCollator
 from train.teacher_attention import attention_alignment_loss
 
@@ -54,6 +56,36 @@ class _FakeProcessor:
 
 
 class TestPhi3Integration(unittest.TestCase):
+    def test_forward_model_in_chunks_concatenates_outputs_without_full_batch_forward(self):
+        calls = []
+
+        def fake_model(**kwargs):
+            calls.append(kwargs["input_ids"].shape[0])
+            input_ids = kwargs["input_ids"]
+            hidden = input_ids.float().unsqueeze(-1).expand(-1, -1, 2)
+            return SimpleNamespace(
+                hidden_states=hidden,
+                attention_mask=kwargs["attention_mask"],
+                attentions=None,
+            )
+
+        batch = {
+            "input_ids": torch.arange(20).reshape(5, 4),
+            "attention_mask": torch.ones(5, 4, dtype=torch.long),
+        }
+
+        out = forward_model_in_chunks(
+            fake_model,
+            batch,
+            torch.device("cpu"),
+            microbatch_size=2,
+            output_attentions=False,
+        )
+
+        self.assertEqual(calls, [2, 2, 1])
+        self.assertEqual(out.hidden_states.shape, torch.Size([5, 4, 2]))
+        self.assertTrue(torch.equal(out.attention_mask, batch["attention_mask"]))
+
     def test_collator_returns_colpali_style_masks_and_dynamic_resizes_docs(self):
         fake_processor = _FakeProcessor()
         fake_transformers = MagicMock()

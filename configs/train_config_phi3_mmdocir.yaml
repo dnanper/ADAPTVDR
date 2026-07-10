@@ -31,6 +31,7 @@ training:
   num_epochs: 1
   per_device_train_batch_size: 8
   gradient_accumulation_steps: 8   # effective 64 queries, matching MMDocIR paper budget
+  doc_microbatch_size: 1
   learning_rate: 3.0e-5
   warmup_ratio: 0.025
   lr_scheduler_type: "cosine"

@@ -22,6 +22,7 @@ from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
 from scripts.colphi3_embedding import ColPhi3ForEmbedding, ensure_phi3_img_projection_bias
+from train.batch_utils import clone_tensor_inputs, forward_model_in_chunks, move_to_device, slice_batch
 from train.dataset import TripletDataset
 from train.loss import AugmentedMaxSimLoss, MatryoshkaAugmentedMaxSimLoss
 from train.phi3_collator import Phi3MMDocIRCollator
@@ -46,26 +47,6 @@ class DotDict(dict):
 def load_config(path: str) -> DotDict:
     with open(path, encoding="utf-8") as f:
         return DotDict(yaml.safe_load(f))
-
-
-def move_to_device(batch: dict, device: torch.device) -> dict:
-    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-
-
-def clone_tensor_inputs(batch: dict) -> dict:
-    return {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-
-
-def slice_batch(batch: dict, start: int, end: int) -> dict:
-    sliced = {}
-    for key, value in batch.items():
-        if isinstance(value, torch.Tensor) and value.dim() > 0 and value.shape[0] >= end:
-            sliced[key] = value[start:end]
-        elif isinstance(value, list):
-            sliced[key] = value[start:end]
-        else:
-            sliced[key] = value
-    return sliced
 
 
 def make_optimizer(params, lr: float):
@@ -214,6 +195,7 @@ def main() -> None:
 
     optimizer = make_optimizer((p for p in model.parameters() if p.requires_grad), cfg.training.learning_rate)
     grad_accum = int(cfg.training.gradient_accumulation_steps)
+    doc_microbatch_size = max(1, int(cfg.training.get("doc_microbatch_size", 1)))
     total_steps = max(1, (len(dataloader) * cfg.training.num_epochs) // grad_accum)
     warmup_steps = int(total_steps * float(cfg.training.get("warmup_ratio", 0.0)))
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
@@ -232,19 +214,27 @@ def main() -> None:
             progress = tqdm(dataloader, desc=f"epoch {epoch + 1}/{cfg.training.num_epochs}")
             for step, batch in enumerate(progress):
                 query_inputs = move_to_device(batch["query_inputs"], device)
-                doc_inputs = move_to_device(batch["doc_inputs"], device)
+                doc_inputs = batch["doc_inputs"]
                 positive_doc_inputs = batch.get("positive_doc_inputs", batch["doc_inputs"])
                 pos_count = int(batch["pos_count"])
                 sample_ids = list(batch.get("sample_ids", []))[:pos_count]
                 queries = list(batch.get("queries", []))[:pos_count]
 
                 q_out = model(**clone_tensor_inputs(query_inputs))
-                d_out = model(**clone_tensor_inputs(doc_inputs), output_attentions=False)
+                d_out = forward_model_in_chunks(
+                    model,
+                    doc_inputs,
+                    device,
+                    microbatch_size=doc_microbatch_size,
+                    output_attentions=False,
+                )
                 q_emb, d_emb = q_out.hidden_states, d_out.hidden_states
                 require_finite("query embeddings", q_emb)
                 require_finite("document embeddings", d_emb)
                 q_mask = batch.get("query_token_mask", q_out.attention_mask.bool()).to(device)
                 d_mask = batch.get("doc_token_mask", d_out.attention_mask.bool()).to(device)
+                doc_input_ids = doc_inputs["input_ids"].to(device)
+                doc_attention_mask = doc_inputs["attention_mask"].to(device)
                 retrieval_loss = loss_fn(q_emb, d_emb, q_mask, d_mask, pos_count=pos_count)
                 require_finite("retrieval loss", retrieval_loss)
                 loss = retrieval_loss
@@ -266,8 +256,8 @@ def main() -> None:
                             d_emb=d_emb[:pos_count],
                             q_input_ids=query_inputs["input_ids"][:pos_count],
                             q_attention_mask=query_inputs["attention_mask"][:pos_count],
-                            d_input_ids=doc_inputs["input_ids"][:pos_count],
-                            d_attention_mask=doc_inputs["attention_mask"][:pos_count],
+                            d_input_ids=doc_input_ids[:pos_count],
+                            d_attention_mask=doc_attention_mask[:pos_count],
                             queries=queries,
                             tokenizer=collator.processor.tokenizer,
                             image_token_id=collator.image_token_id,
