@@ -62,6 +62,7 @@ loss:
   agree_loss_type: "kl"
   agree_student_score_mode: "softmax_sum"
   allow_1d_teacher_resize: false
+  prior_microbatch_size: 1
 
 pruning:
   k_min: 0.3

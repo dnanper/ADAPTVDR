@@ -219,18 +219,24 @@ class Phi3MMDocIRCollator:
             all_doc_images.extend(item.get("hard_neg_images", []))
 
         query_inputs = self._process_queries(queries)
+        positive_doc_inputs = self._process_docs([item["image"] for item in batch])
+        positive_doc_token_mask, positive_doc_image_grid_thw = self.make_doc_token_mask_and_grid(positive_doc_inputs)
         doc_inputs = self._process_docs(all_doc_images)
         doc_token_mask, doc_image_grid_thw = self.make_doc_token_mask_and_grid(doc_inputs)
 
         result = {
             "query_inputs": query_inputs,
             "doc_inputs": doc_inputs,
+            "positive_doc_inputs": positive_doc_inputs,
             "query_token_mask": self.make_query_token_mask(query_inputs),
             "doc_token_mask": doc_token_mask,
+            "positive_doc_token_mask": positive_doc_token_mask,
             "pos_count": len(batch),
             "sample_ids": sample_ids,
             "queries": queries,
         }
         if doc_image_grid_thw is not None:
             result["doc_image_grid_thw"] = doc_image_grid_thw
+        if positive_doc_image_grid_thw is not None:
+            result["positive_doc_image_grid_thw"] = positive_doc_image_grid_thw
         return result

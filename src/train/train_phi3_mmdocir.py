@@ -56,6 +56,18 @@ def clone_tensor_inputs(batch: dict) -> dict:
     return {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
 
+def slice_batch(batch: dict, start: int, end: int) -> dict:
+    sliced = {}
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor) and value.dim() > 0 and value.shape[0] >= end:
+            sliced[key] = value[start:end]
+        elif isinstance(value, list):
+            sliced[key] = value[start:end]
+        else:
+            sliced[key] = value
+    return sliced
+
+
 def make_optimizer(params, lr: float):
     try:
         import bitsandbytes as bnb
@@ -194,6 +206,7 @@ def main() -> None:
 
     dims = list(cfg.loss.get("dims", [128]))
     temperature = float(cfg.loss.get("temperature", 1.0))
+    prior_microbatch_size = max(1, int(cfg.loss.get("prior_microbatch_size", 1)))
     if bool(cfg.loss.get("use_matryoshka", True)):
         loss_fn = MatryoshkaAugmentedMaxSimLoss(dims=dims, temperature=temperature)
     else:
@@ -220,13 +233,13 @@ def main() -> None:
             for step, batch in enumerate(progress):
                 query_inputs = move_to_device(batch["query_inputs"], device)
                 doc_inputs = move_to_device(batch["doc_inputs"], device)
+                positive_doc_inputs = batch.get("positive_doc_inputs", batch["doc_inputs"])
                 pos_count = int(batch["pos_count"])
                 sample_ids = list(batch.get("sample_ids", []))[:pos_count]
                 queries = list(batch.get("queries", []))[:pos_count]
 
-                need_attn = teacher_prior is not None and agree_lambda_prior > 0
                 q_out = model(**clone_tensor_inputs(query_inputs))
-                d_out = model(**clone_tensor_inputs(doc_inputs), output_attentions=need_attn)
+                d_out = model(**clone_tensor_inputs(doc_inputs), output_attentions=False)
                 q_emb, d_emb = q_out.hidden_states, d_out.hidden_states
                 require_finite("query embeddings", q_emb)
                 require_finite("document embeddings", d_emb)
@@ -244,6 +257,9 @@ def main() -> None:
                     student_grids = None
                     if "doc_image_grid_thw" in batch:
                         student_grids = list(batch["doc_image_grid_thw"][:pos_count])
+                    positive_student_grids = student_grids
+                    if "positive_doc_image_grid_thw" in batch:
+                        positive_student_grids = list(batch["positive_doc_image_grid_thw"][:pos_count])
                     if teacher_query is not None and agree_lambda_query > 0:
                         student_scores = extract_query_patch_scores_from_similarity(
                             q_emb=q_emb[:pos_count],
@@ -272,20 +288,28 @@ def main() -> None:
                             require_finite("query alignment loss", agree_query_value)
 
                     if teacher_prior is not None and agree_lambda_prior > 0:
-                        student_scores = extract_prior_patch_scores(
-                            attentions=d_out.attentions,
-                            input_ids=doc_inputs["input_ids"][:pos_count],
-                            attention_mask=doc_inputs["attention_mask"][:pos_count],
-                            image_token_id=collator.image_token_id,
-                            source_mode=teacher_prior.source_mode,
-                            instruction_token_ids=prior_instruction_token_ids,
-                            image_token_mask=d_mask[:pos_count],
-                        )
+                        student_scores = []
+                        for start in range(0, pos_count, prior_microbatch_size):
+                            end = min(pos_count, start + prior_microbatch_size)
+                            prior_inputs = move_to_device(slice_batch(positive_doc_inputs, start, end), device)
+                            prior_mask = batch.get("positive_doc_token_mask", batch["doc_token_mask"][:pos_count])[start:end].to(device)
+                            prior_out = model(**clone_tensor_inputs(prior_inputs), output_attentions=True)
+                            student_scores.extend(
+                                extract_prior_patch_scores(
+                                    attentions=prior_out.attentions,
+                                    input_ids=prior_inputs["input_ids"],
+                                    attention_mask=prior_inputs["attention_mask"],
+                                    image_token_id=collator.image_token_id,
+                                    source_mode=teacher_prior.source_mode,
+                                    instruction_token_ids=prior_instruction_token_ids,
+                                    image_token_mask=prior_mask,
+                                )
+                            )
                         align, matched_prior = attention_alignment_loss(
                             student_scores,
                             teacher_prior.get_many(sample_ids),
                             loss_type=str(cfg.loss.get("agree_loss_type", "kl")),
-                            student_grids=student_grids,
+                            student_grids=positive_student_grids,
                             teacher_grids=teacher_prior.get_many_grids(sample_ids),
                             allow_1d_resize=bool(cfg.loss.get("allow_1d_teacher_resize", False)),
                         )
