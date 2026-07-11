@@ -273,6 +273,25 @@ def aggregate_source_to_image_attention(
     return attn_map.mean(dim=0).mean(dim=0)
 
 
+def aggregate_source_to_image_attention_with_fallback(
+    attn_layer: torch.Tensor,
+    source_positions: torch.Tensor,
+    image_positions: torch.Tensor,
+) -> torch.Tensor:
+    scores = aggregate_source_to_image_attention(
+        attn_layer=attn_layer,
+        source_positions=source_positions,
+        image_positions=image_positions,
+    )
+    if scores.numel() == 0 or bool(scores.float().sum() > 0):
+        return scores
+    return aggregate_source_to_image_attention(
+        attn_layer=attn_layer,
+        source_positions=image_positions,
+        image_positions=image_positions,
+    )
+
+
 def aggregate_query_to_image_attention(
     attn_layer: torch.Tensor,
     query_positions: torch.Tensor,
@@ -594,7 +613,7 @@ def main() -> None:
                     image_token_id=image_token_id,
                 )
 
-            attn_map = aggregate_source_to_image_attention(
+            attn_map = aggregate_source_to_image_attention_with_fallback(
                 attn_layer=attn_layer[batch_idx],
                 source_positions=source_positions,
                 image_positions=image_positions,

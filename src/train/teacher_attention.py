@@ -117,6 +117,25 @@ def _image_token_mask(
     return (input_ids < 0) & valid
 
 
+def _source_to_image_scores(
+    attn_avg: torch.Tensor,
+    source_positions: torch.Tensor,
+    image_positions: torch.Tensor,
+) -> torch.Tensor:
+    return attn_avg[source_positions][:, image_positions].mean(dim=0)
+
+
+def _source_to_image_scores_with_fallback(
+    attn_avg: torch.Tensor,
+    source_positions: torch.Tensor,
+    image_positions: torch.Tensor,
+) -> torch.Tensor:
+    scores = _source_to_image_scores(attn_avg, source_positions, image_positions)
+    if scores.numel() == 0 or bool(scores.float().sum() > 0):
+        return scores
+    return _source_to_image_scores(attn_avg, image_positions, image_positions)
+
+
 def _query_positions(
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
@@ -183,7 +202,11 @@ def extract_prior_patch_scores(
         else:
             raise ValueError(f"Unsupported source_mode={source_mode!r}")
 
-        patch_scores = attn_avg[batch_idx][source_positions][:, image_positions].mean(dim=0)
+        patch_scores = _source_to_image_scores_with_fallback(
+            attn_avg[batch_idx],
+            source_positions,
+            image_positions,
+        )
         scores.append(patch_scores)
 
     return scores

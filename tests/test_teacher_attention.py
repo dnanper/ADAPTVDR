@@ -69,6 +69,34 @@ class TestTeacherAttention(unittest.TestCase):
         self.assertEqual(len(scores), 1)
         self.assertEqual(scores[0].numel(), 0)
 
+    def test_prior_extraction_falls_back_to_image_self_attention_when_instruction_is_causal_zero(self):
+        attentions = (
+            torch.tensor(
+                [
+                    [
+                        [
+                            [0.0, 0.0, 0.0, 0.0],
+                            [0.1, 0.2, 0.7, 0.0],
+                            [0.2, 0.1, 0.4, 0.3],
+                            [0.3, 0.1, 0.2, 0.4],
+                        ]
+                    ]
+                ],
+                dtype=torch.float32,
+            ),
+        )
+
+        scores = extract_prior_patch_scores(
+            attentions=attentions,
+            input_ids=torch.tensor([[11, 99, 99, 12]]),
+            attention_mask=torch.tensor([[1, 1, 1, 1]]),
+            image_token_id=99,
+            source_mode="instruction",
+            instruction_token_ids=[11],
+        )
+
+        self.assertTrue(torch.allclose(scores[0], torch.tensor([0.15, 0.55], dtype=torch.float32)))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -19,6 +19,8 @@ pip install -U "transformers>=4.51.0" "accelerate>=0.26.0" "qwen-vl-utils>=0.0.8
 
 ```bash
 hf download Qwen/Qwen3-VL-8B-Instruct --local-dir models/Qwen3-VL-8B-Instruct
+
+hf download microsoft/Phi-3-vision-128k-instruct --local-dir models/Phi-3-vision-128k-instruct
 ```
 
 ## 4.

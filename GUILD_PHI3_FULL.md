@@ -31,7 +31,7 @@ python -u scripts/precompute_teacher_attn.py \
   --train-data-path dataset/mmdocir-triplets-k1-full \
   --output-path dataset/attn_cache_mmdocir_phi3_prior_full \
   --prompt-mode image_only --source-mode instruction --layer-index -1 \
-  --batch-size 1 --save-every 1 \
+  --batch-size 40 --save-every 1 \
   --instruction "Represent the user's input." \
   --min-pixels 4096 --max-pixels 1048576 --resume \
   2>&1 | tee logs/precompute_prior_full.log

@@ -11,6 +11,7 @@ from scripts.precompute_teacher_attn import (
     _save_batch_shard,
     select_attention_layer,
     aggregate_source_to_image_attention,
+    aggregate_source_to_image_attention_with_fallback,
     aggregate_query_to_image_attention,
     find_subsequence_positions,
     get_all_non_image_positions,
@@ -82,6 +83,27 @@ class TestPrecomputeTeacherAttention(unittest.TestCase):
             image_positions=torch.tensor([2]),
         )
         self.assertTrue(torch.allclose(out, torch.tensor([0.35], dtype=torch.float32)))
+
+    def test_aggregate_source_to_image_attention_falls_back_when_causal_source_is_zero(self):
+        attn_layer = torch.tensor(
+            [
+                [
+                    [0.0, 0.0, 0.0, 0.0],
+                    [0.1, 0.2, 0.7, 0.0],
+                    [0.2, 0.1, 0.4, 0.3],
+                    [0.3, 0.1, 0.2, 0.4],
+                ]
+            ],
+            dtype=torch.float32,
+        )
+
+        out = aggregate_source_to_image_attention_with_fallback(
+            attn_layer=attn_layer,
+            source_positions=torch.tensor([0]),
+            image_positions=torch.tensor([2, 3]),
+        )
+
+        self.assertTrue(torch.allclose(out, torch.tensor([0.3, 0.35], dtype=torch.float32)))
 
     def test_get_instruction_token_positions_finds_instruction_span(self):
         input_ids = torch.tensor([101, 11, 12, 13, 201, 202])
