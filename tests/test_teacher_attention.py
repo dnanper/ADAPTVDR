@@ -69,6 +69,35 @@ class TestTeacherAttention(unittest.TestCase):
         self.assertEqual(len(scores), 1)
         self.assertEqual(scores[0].numel(), 0)
 
+    def test_prior_extraction_matches_instruction_when_prompt_drops_leading_token(self):
+        attentions = (
+            torch.tensor(
+                [
+                    [
+                        [
+                            [0.0, 0.0, 0.0, 0.0, 0.0],
+                            [0.0, 0.0, 0.3, 0.7, 0.0],
+                            [0.0, 0.0, 0.4, 0.6, 0.0],
+                            [0.0, 0.0, 0.2, 0.8, 0.0],
+                            [0.0, 0.0, 0.0, 0.0, 0.0],
+                        ]
+                    ]
+                ],
+                dtype=torch.float32,
+            ),
+        )
+
+        scores = extract_prior_patch_scores(
+            attentions=attentions,
+            input_ids=torch.tensor([[7, 101, 102, 99, 99]]),
+            attention_mask=torch.tensor([[1, 1, 1, 1, 1]]),
+            image_token_id=99,
+            source_mode="instruction",
+            instruction_token_ids=[6, 101, 102],
+        )
+
+        self.assertTrue(torch.allclose(scores[0], torch.tensor([0.65, 0.0], dtype=torch.float32)))
+
     def test_prior_extraction_falls_back_to_image_self_attention_when_instruction_is_causal_zero(self):
         attentions = (
             torch.tensor(

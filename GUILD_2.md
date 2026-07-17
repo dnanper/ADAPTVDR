@@ -71,13 +71,13 @@ tail -n 20 checkpoints/colphi3_full/train_metrics.csv
 
 ## 7. Eval
 
-```bash
+````bash
 python evaluate/evaluate_mmdocir_phi3.py \
   --model models/Phi-3-vision-128k-instruct \
   --checkpoint checkpoints/colphi3_full/final \
   --eval-root dataset/MMDocIR_Evaluation_Dataset \
   --batch-size 16
-```
+```/
 
 Eval with adaptive pruning:
 
@@ -91,4 +91,4 @@ python evaluate/evaluate_mmdocir_phi3.py \
   --prune-r-min 0.3 \
   --prune-r-max 0.9 \
   --prune-mode linear
-```
+````

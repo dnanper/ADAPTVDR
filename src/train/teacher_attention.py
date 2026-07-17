@@ -89,8 +89,24 @@ def _instruction_positions(
     instruction_token_ids: Sequence[int],
 ) -> torch.Tensor:
     valid_ids = input_ids[attention_mask.bool()].tolist()
-    positions = find_subsequence_positions(valid_ids, instruction_token_ids)
+    positions = _find_instruction_positions(valid_ids, instruction_token_ids)
     return torch.tensor(positions, device=input_ids.device, dtype=torch.long)
+
+
+def _find_instruction_positions(sequence: Sequence[int], instruction_token_ids: Sequence[int]) -> List[int]:
+    try:
+        return find_subsequence_positions(sequence, instruction_token_ids)
+    except ValueError:
+        pass
+
+    min_len = 1 if len(instruction_token_ids) == 1 else 2
+    for start in range(1, len(instruction_token_ids) - min_len + 1):
+        suffix = instruction_token_ids[start:]
+        try:
+            return find_subsequence_positions(sequence, suffix)
+        except ValueError:
+            continue
+    raise ValueError("instruction subsequence not found in sequence")
 
 
 def _all_non_image_positions(

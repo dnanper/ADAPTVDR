@@ -155,6 +155,7 @@ def encode_docs(
                 attentions=encoded.attentions,
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
+                patch_mask=doc_mask,
             )
             out.extend([emb.cpu() for emb in pruned])
             keep_ratios.extend(stats.keep_ratios)
@@ -175,7 +176,7 @@ def ndcg_at_k(ranked_pages: List[int], relevant_pages: set, k: int) -> float:
 
 
 def recall_at_k(ranked_pages: List[int], relevant_pages: set, k: int) -> float:
-    return 1.0 if relevant_pages.intersection(ranked_pages[:k]) else 0.0
+    return len(relevant_pages.intersection(ranked_pages[:k])) / len(relevant_pages) if relevant_pages else 0.0
 
 
 def _first_existing(columns: Iterable[str], candidates: Tuple[str, ...]) -> str:

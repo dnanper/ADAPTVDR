@@ -19,13 +19,13 @@ import yaml
 from peft import LoraConfig, PeftModel, get_peft_model
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import get_cosine_schedule_with_warmup
 
 from scripts.colphi3_embedding import ColPhi3ForEmbedding, ensure_phi3_img_projection_bias
 from train.batch_utils import clone_tensor_inputs, forward_model_in_chunks, move_to_device, slice_batch
 from train.dataset import TripletDataset
 from train.loss import AugmentedMaxSimLoss, MatryoshkaAugmentedMaxSimLoss
 from train.phi3_collator import Phi3MMDocIRCollator
+from train.schedule_utils import make_scheduler
 from train.teacher_attention import (
     TeacherAttentionCache,
     attention_alignment_loss,
@@ -103,6 +103,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/train_config_phi3_mmdocir.yaml")
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--resume-global-step", type=int, default=0)
+    parser.add_argument("--skip-micro-steps", type=int, default=0)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -198,7 +200,15 @@ def main() -> None:
     doc_microbatch_size = max(1, int(cfg.training.get("doc_microbatch_size", 1)))
     total_steps = max(1, (len(dataloader) * cfg.training.num_epochs) // grad_accum)
     warmup_steps = int(total_steps * float(cfg.training.get("warmup_ratio", 0.0)))
-    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+    if args.resume_global_step < 0 or args.skip_micro_steps < 0:
+        parser.error("resume steps must be non-negative")
+    if args.skip_micro_steps % grad_accum:
+        parser.error("skip-micro-steps must align with gradient-accumulation-steps")
+    if args.resume_global_step != args.skip_micro_steps // grad_accum:
+        parser.error("resume-global-step must equal skip-micro-steps / gradient-accumulation-steps")
+    if args.resume_global_step > total_steps or args.skip_micro_steps > len(dataloader):
+        parser.error("resume position exceeds the configured training run")
+    scheduler = make_scheduler(optimizer, warmup_steps, total_steps, args.resume_global_step)
     output_dir = Path(cfg.training.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     metric_logger = TrainMetricLogger(output_dir)
@@ -207,12 +217,16 @@ def main() -> None:
     print(f"Metrics : {metric_logger.csv_path}")
     print(f"Metrics : {metric_logger.jsonl_path}")
 
-    global_step = 0
+    global_step = args.resume_global_step
+    if global_step:
+        print(f"Resuming adapter at global_step={global_step}; skipping {args.skip_micro_steps} micro-steps")
     optimizer.zero_grad()
     try:
         for epoch in range(cfg.training.num_epochs):
             progress = tqdm(dataloader, desc=f"epoch {epoch + 1}/{cfg.training.num_epochs}")
             for step, batch in enumerate(progress):
+                if step < args.skip_micro_steps:
+                    continue
                 query_inputs = move_to_device(batch["query_inputs"], device)
                 doc_inputs = batch["doc_inputs"]
                 positive_doc_inputs = batch.get("positive_doc_inputs", batch["doc_inputs"])

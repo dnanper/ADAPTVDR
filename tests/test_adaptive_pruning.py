@@ -92,6 +92,35 @@ class TestAdaptivePruning(unittest.TestCase):
         self.assertEqual(stats.kept_patches, [1])
         self.assertTrue(torch.equal(pruned_list[0], torch.tensor([[5.0, 0.0], [1.0, 0.0]])))
 
+    def test_prune_doc_uses_phi3_spatial_patch_mask(self):
+        hidden_states = torch.tensor([[[5.0, 0.0], [1.0, 0.0], [0.0, 1.0], [2.0, 0.0]]])
+        input_ids = torch.tensor([[7, -1, -1, -1]])
+        attention_mask = torch.ones(1, 4, dtype=torch.long)
+        spatial_patch_mask = torch.tensor([[False, True, True, False]])
+        attention = torch.zeros(1, 1, 4, 4)
+        attention[0, 0, 0, 1] = 0.9
+        attention[0, 0, 0, 2] = 0.1
+
+        pruner = AdaptivePruner(
+            image_token_id=99,
+            r_min=0.5,
+            r_max=0.5,
+            keep_text_tokens=False,
+            normalize=False,
+        )
+
+        pruned_list, stats = pruner.prune_doc(
+            hidden_states=hidden_states,
+            attentions=(attention,),
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            patch_mask=spatial_patch_mask,
+        )
+
+        self.assertTrue(torch.equal(pruned_list[0], torch.tensor([[1.0, 0.0]])))
+        self.assertEqual(stats.original_patches, [2])
+        self.assertEqual(stats.kept_patches, [1])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
