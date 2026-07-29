@@ -1,0 +1,76 @@
+# Thesis-framework Phi3 main: Phi3-Vision + MMDocIR train only.
+# Build data first:
+#   python scripts/build_mmdocir_triplets.py --dataset_root dataset/MMDocIR_Train_Dataset --hard_neg_k 1 --sample-fraction 0.1 --sample-seed 42 --output_dir dataset/mmdocir-triplets-k1-10p
+#   python scripts/build_mmdocir_triplets.py --dataset_root dataset/MMDocIR_Train_Dataset --hard_neg_k 1 --sample-fraction 1.0 --sample-seed 42 --output_dir dataset/mmdocir-triplets-k1-full
+# Optional teacher caches over same triplets:
+#   python -u scripts/precompute_teacher_attn.py --teacher-model models/Qwen3-VL-8B-Instruct --train-data-path dataset/mmdocir-triplets-k1-10p --output-path dataset/attn_cache_mmdocir_phi3_prior_10p --prompt-mode image_only --source-mode instruction --layer-index -1 --batch-size 1 --save-every 1 --instruction "Represent the user's input." --min-pixels 4096 --max-pixels 1048576 --resume
+#   python -u scripts/precompute_teacher_attn.py --teacher-model models/Qwen3-VL-8B-Instruct --train-data-path dataset/mmdocir-triplets-k1-10p --output-path dataset/attn_cache_mmdocir_phi3_query_10p --prompt-mode query_image --source-mode query --layer-index -1 --batch-size 1 --save-every 1 --instruction "Represent the user's input." --min-pixels 4096 --max-pixels 1048576 --resume
+
+model:
+  name_or_path: "microsoft/Phi-3-vision-128k-instruct"
+  mode: "multivec_mrl"
+  projection_dim: 128
+  torch_dtype: "bfloat16"
+
+lora:
+  r: 32
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: "none"
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+training:
+  output_dir: "checkpoints/colphi3_mmdocir_thesis"
+  num_epochs: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 8   # effective 64 queries, matching MMDocIR paper budget
+  doc_microbatch_size: 1
+  learning_rate: 3.0e-5
+  warmup_ratio: 0.025
+  lr_scheduler_type: "cosine"
+  max_grad_norm: 1.0
+  gradient_checkpointing: true
+  bf16: true
+  fp16: false
+  optimizer: "paged_adamw_8bit"
+  dataloader_num_workers: 4
+  logging_steps: 50
+  save_steps: 500
+  save_total_limit: 3
+  seed: 42
+
+data:
+  dataset_type: "mmdocir_triplet"
+  train_data_path: "dataset/mmdocir-triplets-k1-10p"
+  hard_neg_k: 1
+  max_length: 2048
+  image_size: null
+  min_pixels: 4096
+  max_pixels: 1048576
+  query_instruction: "Represent the user's input."
+  doc_instruction: "Represent the user's input."
+  attn_cache_path_prior: "dataset/attn_cache_mmdocir_phi3_prior_10p"
+  attn_cache_path_query: "dataset/attn_cache_mmdocir_phi3_query_10p"
+
+loss:
+  temperature: 1.0
+  use_matryoshka: true
+  dims: [32, 64, 128]
+  agree_lambda_prior: 0.1
+  agree_lambda_query: 0.1
+  agree_loss_type: "kl"
+  agree_student_score_mode: "softmax_sum"
+  allow_1d_teacher_resize: false
+  prior_microbatch_size: 1
+
+pruning:
+  k_min: 0.3
+  k_max: 0.9
+  mode: "linear"

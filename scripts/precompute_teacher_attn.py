@@ -51,7 +51,7 @@ PROMPT_MODE_IMAGE_ONLY = "image_only"
 SOURCE_MODE_QUERY = "query"
 SOURCE_MODE_INSTRUCTION = "instruction"
 SOURCE_MODE_ALL_NON_IMAGE = "all_non_image"
-REQUIRED_COLUMNS = ("query", "image")
+REQUIRED_COLUMNS = ("query",)
 
 
 def parse_args() -> argparse.Namespace:
@@ -159,6 +159,9 @@ def _decode_image(img_data) -> Image.Image:
 def _parquet_files(data_path: str, split: str, num_shards: Optional[int]) -> List[str]:
     pattern = os.path.join(data_path, f"{split}-*.parquet")
     files = sorted(glob.glob(pattern))
+    if not files:
+        pattern = os.path.join(data_path, f"*{split}-*.parquet")
+        files = sorted(glob.glob(pattern))
     if num_shards is not None:
         files = files[:num_shards]
     if not files:
@@ -170,6 +173,8 @@ def _validate_required_columns(df: pd.DataFrame, shard_file: str) -> None:
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
     if missing:
         raise ValueError(f"{shard_file} is missing required columns: {missing}")
+    if "image" not in df.columns and "positive" not in df.columns:
+        raise ValueError(f"{shard_file} must contain either 'image' or 'positive'")
 
 
 def stable_sample_id(
@@ -266,6 +271,25 @@ def aggregate_source_to_image_attention(
     attn_map = attn_layer[:, source_positions, :]
     attn_map = attn_map[:, :, image_positions]
     return attn_map.mean(dim=0).mean(dim=0)
+
+
+def aggregate_source_to_image_attention_with_fallback(
+    attn_layer: torch.Tensor,
+    source_positions: torch.Tensor,
+    image_positions: torch.Tensor,
+) -> torch.Tensor:
+    scores = aggregate_source_to_image_attention(
+        attn_layer=attn_layer,
+        source_positions=source_positions,
+        image_positions=image_positions,
+    )
+    if scores.numel() == 0 or bool(scores.float().sum() > 0):
+        return scores
+    return aggregate_source_to_image_attention(
+        attn_layer=attn_layer,
+        source_positions=image_positions,
+        image_positions=image_positions,
+    )
 
 
 def aggregate_query_to_image_attention(
@@ -377,8 +401,12 @@ def _iter_rows(
         try:
             df = pd.read_parquet(shard_file, columns=["query", "image", "image_filename"])
         except Exception:
-            df = pd.read_parquet(shard_file, columns=["query", "image"])
-            df["image_filename"] = None
+            try:
+                df = pd.read_parquet(shard_file, columns=["query", "image"])
+                df["image_filename"] = None
+            except Exception:
+                df = pd.read_parquet(shard_file, columns=["query", "positive", "sample_id"])
+                df["image_filename"] = None
         _validate_required_columns(df, shard_file)
         for row_idx, row in df.iterrows():
             yield shard_file, row_idx, row
@@ -498,7 +526,7 @@ def main() -> None:
                 skipped += 1
                 continue
 
-            sample_id = stable_sample_id(
+            sample_id = row.get("sample_id") or stable_sample_id(
                 shard_path=shard_file,
                 row_idx=row_idx,
                 image_filename=row.get("image_filename"),
@@ -508,7 +536,7 @@ def main() -> None:
                 continue
 
             try:
-                image = _decode_image(row["image"])
+                image = _decode_image(row["image"] if "image" in row else row["positive"])
             except Exception as exc:
                 skipped += 1
                 print(f"[skip] failed to decode image for sample {sample_id}: {exc}")
@@ -585,7 +613,7 @@ def main() -> None:
                     image_token_id=image_token_id,
                 )
 
-            attn_map = aggregate_source_to_image_attention(
+            attn_map = aggregate_source_to_image_attention_with_fallback(
                 attn_layer=attn_layer[batch_idx],
                 source_positions=source_positions,
                 image_positions=image_positions,

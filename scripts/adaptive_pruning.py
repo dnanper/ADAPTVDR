@@ -150,6 +150,7 @@ def extract_image_patch_scores(
     attention_mask:  Optional[torch.Tensor] = None,
     image_token_id:  int = IMAGE_TOKEN_ID_QWEN35,
     layer_idx:       int = FULL_ATTENTION_LAYER_IDX,
+    patch_mask:      Optional[torch.Tensor] = None,
 ) -> Optional[List[torch.Tensor]]:
     """Extract per-image-patch importance from model attention weights.
 
@@ -199,7 +200,9 @@ def extract_image_patch_scores(
     else:
         valid_mask = attention_mask.bool()
 
-    img_mask  = (input_ids == image_token_id) & valid_mask   # [B, N] True = image patch
+    if patch_mask is not None:
+        patch_mask = patch_mask.to(input_ids.device)
+    img_mask = (patch_mask.bool() if patch_mask is not None else input_ids == image_token_id) & valid_mask
     text_mask = (~img_mask) & valid_mask                     # [B, N] True = non-pad text token
 
     if not img_mask.any():
@@ -302,10 +305,13 @@ class AdaptivePruner:
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         patch_scores_list: Optional[List[torch.Tensor]],
+        patch_mask: Optional[torch.Tensor] = None,
         normalize: Optional[bool] = None,
     ) -> Tuple[List[torch.Tensor], PruningStats]:
         do_norm = normalize if normalize is not None else self.normalize
         B = hidden_states.shape[0]
+        if patch_mask is not None:
+            patch_mask = patch_mask.to(attention_mask.device)
 
         stats        = PruningStats()
         pruned_list: List[torch.Tensor] = []
@@ -315,7 +321,7 @@ class AdaptivePruner:
             emb_b  = hidden_states[b][mask_b]
             ids_b  = input_ids[b][mask_b]
 
-            img_mask_b  = (ids_b == self.image_token_id)
+            img_mask_b = (patch_mask[b][mask_b].bool() if patch_mask is not None else ids_b == self.image_token_id)
             img_indices = img_mask_b.nonzero(as_tuple=True)[0]
 
             no_scores = (
@@ -373,6 +379,7 @@ class AdaptivePruner:
         patch_scores_list: List[torch.Tensor],
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        patch_mask: Optional[torch.Tensor] = None,
         normalize: Optional[bool] = None,
     ) -> Tuple[List[torch.Tensor], PruningStats]:
         """Prune document embeddings from externally supplied patch scores.
@@ -385,6 +392,7 @@ class AdaptivePruner:
             input_ids=input_ids,
             attention_mask=attention_mask,
             patch_scores_list=patch_scores_list,
+            patch_mask=patch_mask,
             normalize=normalize,
         )
 
@@ -394,6 +402,7 @@ class AdaptivePruner:
         attentions:     tuple,
         input_ids:      torch.Tensor,
         attention_mask: torch.Tensor,
+        patch_mask:     Optional[torch.Tensor] = None,
         normalize:      Optional[bool] = None,
     ) -> Tuple[List[torch.Tensor], PruningStats]:
         """Prune document patch embeddings for a batch of documents.
@@ -424,11 +433,13 @@ class AdaptivePruner:
             attention_mask=attention_mask,
             image_token_id=self.image_token_id,
             layer_idx=self.layer_idx,
+            patch_mask=patch_mask,
         )
         return self._prune_from_patch_scores(
             hidden_states=hidden_states,
             input_ids=input_ids,
             attention_mask=attention_mask,
             patch_scores_list=patch_scores_list,
+            patch_mask=patch_mask,
             normalize=normalize,
         )

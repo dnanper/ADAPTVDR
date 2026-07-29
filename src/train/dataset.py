@@ -335,5 +335,5 @@ class TripletDataset(Dataset):
             "query":           row["query"],
             "image":           positive,
             "hard_neg_images": hard_neg_images,
-            "sample_id":       None,
+            "sample_id":       row.get("sample_id"),
         }
