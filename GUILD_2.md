@@ -74,7 +74,7 @@ tail -n 20 checkpoints/colphi3_full/train_metrics.csv
 ````bash
 python evaluate/evaluate_mmdocir_phi3.py \
   --model models/Phi-3-vision-128k-instruct \
-  --checkpoint checkpoints/colphi3_full/final \
+  --checkpoint checkpoints/final \
   --eval-root dataset/MMDocIR_Evaluation_Dataset \
   --batch-size 16
 ```/
@@ -82,13 +82,36 @@ python evaluate/evaluate_mmdocir_phi3.py \
 Eval with adaptive pruning:
 
 ```bash
-python evaluate/evaluate_mmdocir_phi3.py \
+mkdir -p results reports logs
+
+python -u evaluate/evaluate_mmdocir_phi3.py \
+    --model models/Phi-3-vision-128k-instruct \
+    --checkpoint checkpoints/checkpoint-250 \
+    --eval-root dataset/MMDocIR_Evaluation_Dataset \
+    --batch-size 2 \
+    --min-pixels 4096 \
+    --max-pixels 1048576 \
+    --sample-log results/mmdocir_phi3_5p_250_samples_1.jsonl \
+    --top-k-log 10 \
+    2>&1 | tee logs/eval_phi3_5p_full_250_1.log
+
+python -u evaluate/evaluate_mmdocir_phi3.py \
   --model models/Phi-3-vision-128k-instruct \
-  --checkpoint checkpoints/colphi3_full/final \
+  --checkpoint checkpoints/checkpoint-250 \
   --eval-root dataset/MMDocIR_Evaluation_Dataset \
-  --batch-size 16 \
+  --batch-size 2 \
+  --min-pixels 4096 \
+  --max-pixels 1048576 \
   --prune-docs \
   --prune-r-min 0.3 \
   --prune-r-max 0.9 \
-  --prune-mode linear
+  --prune-mode linear \
+  --sample-log results/mmdocir_phi3_5p_pruned_250_samples.jsonl \
+  --top-k-log 10 \
+  2>&1 | tee logs/eval_phi3_5p_full_pruned_250.log
+
+python scripts/summarize_mmdocir_jsonl.py \
+  --sample-log results/mmdocir_phi3_5p_250_samples_1.jsonl \
+  --annotations dataset/MMDocIR_Evaluation_Dataset/MMDocIR_annotations.jsonl \
+  --output reports/mmdocir_phi3_5p_250_1_vs_paper.md
 ````

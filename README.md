@@ -1,65 +1,94 @@
-## Contributing & Future Directions
+# ADAPTVDR
 
-This repository accompanies the thesis *"Optimization of ColPali for Document Retrieval"* and is open for further research and experimentation. Below are concrete directions worth exploring.
+Research code for **ADAPTVDR: Efficient Multi-Vector Visual Document Retrieval with Adaptive Resolution and Index Compression**.
 
-### Pruning Strategies
+ADAPTVDR is a ColPali-style visual document retriever. It preserves page aspect ratio within bounded pixel budgets, uses frozen Teacher attention maps to supervise local Student evidence during training, and prunes Student page vectors for a smaller MaxSim index. The Teacher is used only offline; the Student alone indexes and retrieves pages.
 
-The current `AdaptivePruner` (`scripts/adaptive_pruning.py`) supports two keep-ratio modes:
+## Paper results
 
-| Mode | Formula | Hyperparams |
-|---|---|---|
-| `linear` | `r_min + (r_max − r_min) · H/H_max` | `r_min`, `r_max` |
-| `perplexity` | `2^((H − H_max) / τ)` | `τ` |
+- **ViDoRe v1:** PaliGemma2-3B reaches **86.88 mean nDCG@5**; the published ColPali reference is 81.25.
+- **Index compression:** linear entropy pruning saves **24.15%** of raw vector payload for a **0.43-point nDCG@5** decrease.
+- **MMDocIR:** pruned Phi-3-Vision-128K-Instruct reaches **82.38 macro** and **83.25 micro Recall@5**.
 
-Potential contributions:
-- **New scoring functions** — instead of CLS/text→image attention, try L2-norm of 128-dim embeddings or CLIP-based saliency scores. See `extract_image_patch_scores()` in `adaptive_pruning.py`.
-- **Learned threshold** — replace `τ` with a small MLP trained via distillation from full-embedding retrieval scores.
-- **Layer ablation** — `FULL_ATTENTION_LAYER_IDX = -1` by default. A layer-index vs nDCG@5 curve would justify (or challenge) this choice.
+See the paper for complete experimental settings, ablations, and comparison scope.
 
-### Backbone Extensions
+## Method at a glance
 
-The pruner is backbone-agnostic. Each backbone requires only:
-1. An `image_token_id` constant (see `IMAGE_TOKEN_ID_*` in `adaptive_pruning.py`)
-2. A corresponding embedder in `scripts/`
+1. Encode query tokens and page patches with a Student multi-vector retriever; rank pages with MaxSim.
+2. Preserve page geometry with bounded dynamic resolution (`min_pixels` to `max_pixels`).
+3. Cache query-conditioned and image-prior Teacher maps for positive training pages; align them to Student patch grids.
+4. At indexing, retain Student page patches according to attention importance and entropy-adaptive keep ratios. MaxSim serving is unchanged.
 
-| Backbone | Status | Token ID |
-|---|---|---|
-| ColPali (PaliGemma-3B) | ✅ working | 257152 |
-| ColQwen3.5-0.8B | ✅ working | 248056 |
-| ColQwen3VL 2B/4B | ✅ working | 151655 |
-| Vintern-Embedding-1B | contribution welcome | — |
+## Repository map
 
-### Evaluation
+| Path | Purpose |
+| --- | --- |
+| `src/train/` | datasets, collators, losses, Teacher-target loading, and training entry points |
+| `scripts/` | backbone embedders, Teacher-cache precomputation, MMDocIR triplet construction, and pruning |
+| `configs/` | ViDoRe, ColPali/ColQwen, and Phi-3/MMDocIR experiment settings |
+| `evaluate/` | ViDoRe and MMDocIR retrieval evaluation |
+| `GUILD.md` | full MMDocIR/Phi-3 data, cache, training, and evaluation runbook |
 
-Run the full ViDoRe benchmark with pruning:
+## Setup
+
+Python, PyTorch with CUDA, and a bf16-capable NVIDIA GPU are required for the reported runs. Install the PyTorch build matching your CUDA environment first, then:
 
 ```bash
-# Edit keep-ratio mode/tau in configs/train_config.yaml, then:
-python evaluate/run_vidore.py --pruner perplexity --tau 2.0
+git clone https://github.com/dnanper/vidore-thesis.git
+cd vidore-thesis
+pip install -r requirements.txt
+pip install accelerate bitsandbytes pyyaml
 ```
 
-Key metrics to report: **nDCG@5**, **Recall@1**, **Recall@5**, **KB/page**.
+Datasets, model weights, Teacher caches, and checkpoints are not included. The checked-in YAML files contain machine-local paths; update `model.name_or_path`, data paths, cache paths, and `training.output_dir` before running.
 
-### LOO Rank-Correlation Experiment
+## Reproduce a pipeline
 
-To validate that attention scores from the 1024-dim last layer are good proxies for MaxSim patch contribution (no extra forward passes needed):
+### ViDoRe training
 
-```python
-# For each (doc, query) pair:
-# 1. S = Q @ E.T                                  # [Q_len, N]
-# 2. LOO[p] = maxsim_full - maxsim(S[:, p!=i])   # contribution of patch p
-# 3. Spearman ρ(attention_scores, LOO)            # > 0.6 = proxy is valid
+Precompute the prior and query Teacher caches for the `vidore/colpali_train_set`, then train a Student configuration:
+
+```bash
+python src/train/train.py \
+  --config configs/train_config_colqwen35_08b_colpali_grid_both.yaml
 ```
 
-### Citation
+Use `scripts/precompute_teacher_attn.py` for cache generation. The corresponding configuration specifies the expected cache locations and dynamic-resolution bounds.
 
-If you use or extend this work, please cite the original ColPali paper:
+### MMDocIR / Phi-3
+
+Build page-level triplets, cache Teacher maps over positive pages, then run the Phi-3 training entry point:
+
+```bash
+python scripts/build_mmdocir_triplets.py \
+  --dataset_root dataset/MMDocIR_Train_Dataset \
+  --hard_neg_k 1 --sample-fraction 0.1 --sample-seed 42 \
+  --output_dir dataset/mmdocir-triplets-k1-10p
+
+python src/train/train_phi3_mmdocir.py \
+  --config configs/train_config_phi3_mmdocir.yaml
+```
+
+`GUILD.md` gives exact download, precompute, smoke-test, and full-run commands. Start with `configs/train_config_phi3_smoke32.yaml` to validate the data-to-cache-to-training path.
+
+### Evaluate MMDocIR with pruning
+
+```bash
+python evaluate/evaluate_mmdocir_phi3.py \
+  --checkpoint checkpoints/colphi3_mmdocir_thesis/final \
+  --eval-root dataset/MMDocIR_Evaluation_Dataset \
+  --prune-docs --prune-r-min 0.3 --prune-r-max 0.9 --prune-mode linear
+```
+
+Omit `--prune-docs` for an unpruned evaluation. Omit `--image-size` to retain dynamic-resolution preprocessing.
+
+## Citation
 
 ```bibtex
-@article{faysse2024colpali,
-  title   = {ColPali: Efficient Document Retrieval with Vision Language Models},
-  author  = {Faysse, Manuel and others},
-  journal = {arXiv preprint arXiv:2407.01449},
-  year    = {2024}
+@inproceedings{hoang2026adaptvdr,
+  title     = {ADAPTVDR: Efficient Multi-Vector Visual Document Retrieval with Adaptive Resolution and Index Compression},
+  author    = {Hoang, Bao-Long and Phan, Tat-An and Nguyen, Thi-Hau},
+  booktitle = {Knowledge and Systems Engineering},
+  year      = {2026}
 }
 ```
