@@ -36,6 +36,7 @@ PAPER_COLPHI3 = {
     "r3": [80.2, 74.1, 77.4, 84.8, 69.1, 67.7, 78.7, 79.5, 81.8, 69.3, 76.3, 76.8],
     "r5": [86.3, 78.8, 81.2, 92.4, 79.0, 73.8, 85.3, 85.1, 87.1, 73.0, 82.2, 83.0],
 }
+PAPER_LABEL_BY_DOMAIN = dict(zip(DOMAIN_ORDER, PAPER_LABELS))
 
 
 def recall_at_k(ranked_pages, relevant_pages, k):
@@ -123,6 +124,21 @@ def table_for_metric(metric, report):
     return "\n".join(lines)
 
 
+def ndcg_table(report):
+    lines = ["| Domain | Phi3 pruning nDCG@5 |", "| --- | ---: |"]
+    for domain in DOMAIN_ORDER:
+        if domain in report["by_domain"]:
+            label = PAPER_LABEL_BY_DOMAIN[domain]
+            lines.append(f"| {label} | {report['by_domain'][domain]['ndcg5'] * 100:.2f} |")
+    lines.extend(
+        [
+            f"| Average Macro | {report['macro']['ndcg5'] * 100:.2f} |",
+            f"| Average Micro | {report['micro']['ndcg5'] * 100:.2f} |",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def markdown_report(report):
     parts = [
         "# MMDocIR Phi3 Pruning vs Paper",
@@ -131,6 +147,7 @@ def markdown_report(report):
     ]
     for metric, title in (("r1", "Recall@1"), ("r3", "Recall@3"), ("r5", "Recall@5")):
         parts.extend(["", f"## {title}", "", table_for_metric(metric, report)])
+    parts.extend(["", "## nDCG@5", "", "The paper's Table 5 does not report nDCG@5.", "", ndcg_table(report)])
     return "\n".join(parts) + "\n"
 
 

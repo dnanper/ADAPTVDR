@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.summarize_mmdocir_jsonl import summarize_rows
+from scripts.summarize_mmdocir_jsonl import ndcg_table, summarize_rows
 
 
 class TestSummarizeMMDocIRJsonl(unittest.TestCase):
@@ -30,3 +30,4 @@ class TestSummarizeMMDocIRJsonl(unittest.TestCase):
         self.assertEqual(report["by_domain"]["News"]["r1"], 0.0)
         self.assertEqual(report["micro"]["r3"], 0.75)
         self.assertEqual(report["macro"]["r1"], 0.25)
+        self.assertIn("nDCG@5", ndcg_table(report))

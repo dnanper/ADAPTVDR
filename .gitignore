@@ -16,7 +16,7 @@ __pycache__/
 venv/
 
 # Runtime logs and process output
-*.log
+# *.log
 logs/
 nohup*.out
 
